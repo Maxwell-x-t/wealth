@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { h, onMounted, reactive, ref } from 'vue'
 import {
   NButton,
   NDataTable,
@@ -11,16 +11,19 @@ import {
   NSelect,
   NSpace,
   NSpin,
+  NTag,
   useMessage,
 } from 'naive-ui'
-import { getInstruments, getPrices, updatePrice } from '../api/client'
-import { formatMoney, formatNumber } from '../utils/format'
+import { getInstruments, getPrices, refreshPrices, updatePrice } from '../api/client'
+import { formatNumber } from '../utils/format'
 
 const message = useMessage()
 const loading = ref(true)
+const refreshing = ref(false)
 const showModal = ref(false)
 const prices = ref([])
 const instruments = ref([])
+const lastRefresh = ref(null)
 
 const form = reactive({
   instrument_id: null,
@@ -66,27 +69,107 @@ async function submitForm() {
   }
 }
 
+async function handleRefresh() {
+  refreshing.value = true
+  try {
+    const result = await refreshPrices()
+    lastRefresh.value = result
+    await loadData()
+    if (result.fail_count === 0) {
+      message.success(`已拉取 ${result.success_count} 个品种行情`)
+    } else if (result.success_count === 0) {
+      message.error('全部拉取失败，请检查网络或稍后重试')
+    } else {
+      message.warning(`成功 ${result.success_count}，失败 ${result.fail_count}`)
+    }
+  } catch (error) {
+    message.error(error.response?.data?.detail || '拉取失败')
+  } finally {
+    refreshing.value = false
+  }
+}
+
 const columns = [
   { title: '代码', key: 'instrument_code', width: 100 },
   { title: '名称', key: 'instrument_name', width: 140 },
-  { title: '币种', key: 'currency', width: 80 },
-  { title: '最新价', key: 'price', render: (row) => formatNumber(row.price, 4) },
-  { title: '更新日期', key: 'snapshot_date', width: 120 },
+  {
+    title: '币种',
+    key: 'currency',
+    width: 70,
+    render: (row) =>
+      h(NTag, { size: 'small', type: row.currency === 'USD' ? 'info' : 'default' }, {
+        default: () => row.currency,
+      }),
+  },
+  {
+    title: '最新价',
+    key: 'price',
+    render: (row) => (row.price == null ? '-' : formatNumber(row.price, 4)),
+  },
+  {
+    title: '更新日期',
+    key: 'snapshot_date',
+    width: 120,
+    render: (row) => row.snapshot_date || '-',
+  },
+]
+
+const refreshColumns = [
+  { title: '代码', key: 'instrument_code', width: 90 },
+  { title: '名称', key: 'instrument_name', width: 120 },
+  {
+    title: '结果',
+    key: 'success',
+    width: 80,
+    render: (row) =>
+      h(NTag, { size: 'small', type: row.success ? 'success' : 'error' }, {
+        default: () => (row.success ? '成功' : '失败'),
+      }),
+  },
+  {
+    title: '价格',
+    key: 'price',
+    render: (row) => (row.price == null ? '-' : formatNumber(row.price, 4)),
+  },
+  { title: '来源', key: 'source', width: 120, render: (row) => row.source || '-' },
+  {
+    title: '说明',
+    key: 'error',
+    render: (row) => row.error || (row.snapshot_date ? row.snapshot_date : '-'),
+  },
 ]
 </script>
 
 <template>
-  <NSpin :show="loading">
+  <NSpin :show="loading || refreshing">
     <div class="header-row">
-      <h1 class="page-title">行情更新</h1>
-      <NButton type="primary" @click="openCreate">更新价格</NButton>
+      <div>
+        <h1 class="page-title">行情更新</h1>
+        <p class="page-desc">大陆 ETF 走东方财富/新浪，美股 ETF 走新浪美股/Yahoo；失败可手动补录</p>
+      </div>
+      <NSpace>
+        <NButton type="primary" :loading="refreshing" @click="handleRefresh">一键拉取行情</NButton>
+        <NButton @click="openCreate">手动更新</NButton>
+      </NSpace>
     </div>
 
-    <div class="panel">
+    <div class="panel" style="margin-bottom: 16px">
       <NDataTable :columns="columns" :data="prices" :bordered="false" size="small" />
     </div>
 
-    <NModal v-model:show="showModal" preset="card" title="更新价格" style="width: 480px">
+    <div v-if="lastRefresh" class="panel">
+      <h3>
+        最近一次拉取：成功 {{ lastRefresh.success_count }}，失败 {{ lastRefresh.fail_count }}
+      </h3>
+      <NDataTable
+        :columns="refreshColumns"
+        :data="lastRefresh.items"
+        :bordered="false"
+        size="small"
+      />
+    </div>
+
+    <NModal v-model:show="showModal" preset="card" title="手动更新价格" style="width: 480px">
       <NForm label-placement="left" label-width="90">
         <NFormItem label="品种">
           <NSelect
@@ -115,11 +198,23 @@ const columns = [
 .header-row {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   margin-bottom: 16px;
 }
 
 .header-row .page-title {
-  margin-bottom: 0;
+  margin-bottom: 4px;
+}
+
+.page-desc {
+  margin: 0;
+  color: #8b98a5;
+  font-size: 13px;
+}
+
+h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 600;
 }
 </style>

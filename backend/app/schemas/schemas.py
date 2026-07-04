@@ -92,9 +92,27 @@ class PriceOut(BaseModel):
     instrument_id: int
     instrument_code: str
     instrument_name: str
-    price: float
-    snapshot_date: date
+    price: Optional[float] = None
+    snapshot_date: Optional[date] = None
     currency: str
+
+
+class PriceRefreshItem(BaseModel):
+    instrument_id: int
+    instrument_code: str
+    instrument_name: str
+    success: bool
+    price: Optional[float] = None
+    snapshot_date: Optional[date] = None
+    currency: str
+    source: Optional[str] = None
+    error: Optional[str] = None
+
+
+class PriceRefreshResult(BaseModel):
+    success_count: int
+    fail_count: int
+    items: List[PriceRefreshItem]
 
 
 class AllocationTarget(BaseModel):

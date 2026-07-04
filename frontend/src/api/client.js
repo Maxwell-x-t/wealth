@@ -32,6 +32,8 @@ export const getWealthForecast = (params = {}) =>
 
 export const getPrices = () => client.get('/prices').then((r) => r.data)
 export const updatePrice = (data) => client.post('/prices', data).then((r) => r.data)
+export const refreshPrices = () =>
+  client.post('/prices/refresh', null, { timeout: 60000 }).then((r) => r.data)
 
 export const getLatestExchangeRate = () => client.get('/exchange-rates/latest').then((r) => r.data)
 export const getExchangeRateHistory = () => client.get('/exchange-rates').then((r) => r.data)
