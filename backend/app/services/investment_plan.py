@@ -232,7 +232,7 @@ def _group_match_transactions(items: List[dict], db: Session, usd_cny_rate: floa
 
 
 def _apply_rollover_merges(items: List[dict]) -> None:
-    """逾期未执行全额顺延；部分完成仅顺延差额。"""
+    """窗口关闭后：逾期全额顺延，部分完成仅顺延差额。窗口未关闭不合并。"""
     by_group: dict[Tuple[str, str], List[dict]] = defaultdict(list)
     for item in items:
         by_group[_group_key(item)].append(item)
@@ -247,6 +247,9 @@ def _apply_rollover_merges(items: List[dict]) -> None:
                 continue
 
             if item["status"] == "overdue":
+                # 匹配窗口仍开放时保留逾期，等待补录，不提前整笔合并
+                if not _window_closed(item["plan_date"]):
+                    continue
                 pending_rollover += float(item["base_amount_cny"])
                 pending_count += 1
                 item["status"] = "merged"
@@ -480,8 +483,9 @@ def build_plan_overview(db: Session, config: dict) -> dict:
 
     history = [
         item
-        for item in dca_elapsed
-        if item["status"] in ("done", "partial", "merged", "overdue")
+        for item in plans
+        if item["plan_date"] <= today
+        and item["status"] in ("done", "partial", "merged", "overdue")
     ]
     history.sort(key=lambda item: (item["plan_date"], item["account"], item["category"]), reverse=True)
     history = history[:100]
