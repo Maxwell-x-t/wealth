@@ -38,3 +38,5 @@ export const refreshPrices = () =>
 export const getLatestExchangeRate = () => client.get('/exchange-rates/latest').then((r) => r.data)
 export const getExchangeRateHistory = () => client.get('/exchange-rates').then((r) => r.data)
 export const createExchangeRate = (data) => client.post('/exchange-rates', data).then((r) => r.data)
+export const refreshExchangeRate = () =>
+  client.post('/exchange-rates/refresh', null, { timeout: 20000 }).then((r) => r.data)

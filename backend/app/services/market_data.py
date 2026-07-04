@@ -208,3 +208,61 @@ def resolve_source_label(instrument: Instrument) -> str:
     if currency == "USD" or code.isalpha():
         return "新浪美股/Yahoo"
     return "东方财富/新浪"
+
+
+def fetch_usd_cny_rate(timeout: float = 10.0) -> Tuple[float, date, str]:
+    """拉取美元兑人民币汇率，优先在岸，失败回退离岸。"""
+    errors = []
+    for symbol, label in (("fx_susdcny", "新浪在岸"), ("fx_susdcnh", "新浪离岸")):
+        try:
+            rate, snapshot = _fetch_sina_fx(symbol, timeout)
+            return rate, snapshot, label
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{label}: {exc}")
+    raise RuntimeError("；".join(errors))
+
+
+def _fetch_sina_fx(symbol: str, timeout: float) -> Tuple[float, date]:
+    url = f"https://hq.sinajs.cn/list={symbol}"
+    headers = {"User-Agent": USER_AGENT, "Referer": "https://finance.sina.com.cn"}
+    with httpx.Client(timeout=timeout, headers=headers) as client:
+        response = client.get(url)
+        response.raise_for_status()
+        text = response.text
+
+    if '="' not in text:
+        raise RuntimeError("响应格式异常")
+    body = text.split('="', 1)[1].rsplit('"', 1)[0]
+    if not body:
+        raise RuntimeError("无汇率数据")
+    parts = body.split(",")
+    if len(parts) < 2:
+        raise RuntimeError("字段不足")
+
+    # 新浪外汇：常见现价在 index 8，否则取买价 index 1
+    candidates = []
+    if len(parts) > 8 and parts[8]:
+        candidates.append(parts[8])
+    candidates.extend([parts[1], parts[2], parts[3]])
+    rate = None
+    for item in candidates:
+        try:
+            value = float(item)
+        except (TypeError, ValueError):
+            continue
+        if 1 < value < 20:
+            rate = value
+            break
+    if rate is None:
+        raise RuntimeError("汇率无效")
+
+    snapshot = date.today()
+    for part in reversed(parts):
+        part = (part or "").strip()
+        if len(part) >= 10 and part[4] == "-" and part[7] == "-":
+            try:
+                snapshot = datetime.strptime(part[:10], "%Y-%m-%d").date()
+                break
+            except ValueError:
+                continue
+    return rate, snapshot

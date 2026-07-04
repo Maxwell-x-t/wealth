@@ -8,17 +8,25 @@ import {
   NFormItem,
   NInputNumber,
   NModal,
+  NSpace,
   NSpin,
   useMessage,
 } from 'naive-ui'
-import { createExchangeRate, getExchangeRateHistory, getLatestExchangeRate } from '../api/client'
+import {
+  createExchangeRate,
+  getExchangeRateHistory,
+  getLatestExchangeRate,
+  refreshExchangeRate,
+} from '../api/client'
 import { formatNumber } from '../utils/format'
 
 const message = useMessage()
 const loading = ref(true)
+const refreshing = ref(false)
 const showModal = ref(false)
 const latest = ref(null)
 const history = ref([])
+const lastSource = ref(null)
 
 const form = reactive({
   rate: null,
@@ -56,9 +64,24 @@ async function submitForm() {
     })
     message.success('汇率已更新')
     showModal.value = false
+    lastSource.value = '手动录入'
     await loadData()
   } catch (error) {
     message.error(error.response?.data?.detail || '更新失败')
+  }
+}
+
+async function handleRefresh() {
+  refreshing.value = true
+  try {
+    const result = await refreshExchangeRate()
+    lastSource.value = result.source || '自动拉取'
+    await loadData()
+    message.success(`已拉取汇率 ${formatNumber(result.rate, 4)}（${lastSource.value}）`)
+  } catch (error) {
+    message.error(error.response?.data?.detail || '拉取失败')
+  } finally {
+    refreshing.value = false
   }
 }
 
@@ -70,20 +93,28 @@ const columns = [
 </script>
 
 <template>
-  <NSpin :show="loading">
+  <NSpin :show="loading || refreshing">
     <div class="header-row">
       <div>
         <h1 class="page-title">汇率更新</h1>
-        <p class="page-desc">用于美元持仓市值折算人民币；交易当日汇率请在录入交易时填写</p>
+        <p class="page-desc">
+          用于美元持仓市值折算人民币；优先新浪在岸，失败回退离岸。交易当日汇率请在录入交易时填写。
+        </p>
       </div>
-      <NButton type="primary" @click="openCreate">更新汇率</NButton>
+      <NSpace>
+        <NButton type="primary" :loading="refreshing" @click="handleRefresh">一键拉取汇率</NButton>
+        <NButton @click="openCreate">手动更新</NButton>
+      </NSpace>
     </div>
 
     <div v-if="latest" class="metric-grid" style="margin-bottom: 16px">
       <div class="metric-card">
         <div class="metric-label">当前美元汇率</div>
         <div class="metric-value">{{ formatNumber(latest.rate, 4) }}</div>
-        <div class="metric-sub">更新日期 {{ latest.snapshot_date }}</div>
+        <div class="metric-sub">
+          更新日期 {{ latest.snapshot_date }}
+          <span v-if="lastSource"> · {{ lastSource }}</span>
+        </div>
       </div>
     </div>
 
@@ -92,7 +123,7 @@ const columns = [
       <NDataTable :columns="columns" :data="history" :bordered="false" size="small" />
     </div>
 
-    <NModal v-model:show="showModal" preset="card" title="更新美元汇率" style="width: 480px">
+    <NModal v-model:show="showModal" preset="card" title="手动更新美元汇率" style="width: 480px">
       <NForm label-placement="left" label-width="100">
         <NFormItem label="美元兑人民币">
           <NInputNumber v-model:value="form.rate" :min="0" :step="0.0001" style="width: 100%" />
@@ -102,7 +133,10 @@ const columns = [
         </NFormItem>
       </NForm>
       <template #footer>
-        <NButton type="primary" @click="submitForm">保存</NButton>
+        <NSpace justify="end">
+          <NButton @click="showModal = false">取消</NButton>
+          <NButton type="primary" @click="submitForm">保存</NButton>
+        </NSpace>
       </template>
     </NModal>
   </NSpin>

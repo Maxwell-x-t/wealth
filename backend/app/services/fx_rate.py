@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Optional
 
 from sqlalchemy.orm import Session
 
 from app.models.models import AppConfig, FxRateSnapshot
 from app.services.config import get_config_map
+from app.services.market_data import fetch_usd_cny_rate
 
 PAIR_USD_CNY = "USD/CNY"
 
@@ -33,7 +35,7 @@ def list_fx_rates(db: Session, limit: int = 30) -> list[FxRateSnapshot]:
     )
 
 
-def save_usd_cny_rate(db: Session, rate: float, snapshot_date: date | None = None) -> FxRateSnapshot:
+def save_usd_cny_rate(db: Session, rate: float, snapshot_date: Optional[date] = None) -> FxRateSnapshot:
     snap_date = snapshot_date or date.today()
     row = FxRateSnapshot(pair=PAIR_USD_CNY, rate=rate, snapshot_date=snap_date)
     db.add(row)
@@ -45,3 +47,14 @@ def save_usd_cny_rate(db: Session, rate: float, snapshot_date: date | None = Non
     db.commit()
     db.refresh(row)
     return row
+
+
+def refresh_usd_cny_rate(db: Session) -> dict:
+    rate, snapshot_date, source = fetch_usd_cny_rate()
+    row = save_usd_cny_rate(db, rate, snapshot_date)
+    return {
+        "pair": row.pair,
+        "rate": float(row.rate),
+        "snapshot_date": row.snapshot_date,
+        "source": source,
+    }
