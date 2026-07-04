@@ -34,6 +34,10 @@ def _config_to_schema(config: dict) -> AllocationTarget:
         mainland_sp500_code=config.get("mainland_sp500_code", "513500"),
         hk_nasdaq_code=config.get("hk_nasdaq_code", "QQQM"),
         hk_sp500_code=config.get("hk_sp500_code", "VOO"),
+        forecast_years=int(config.get("forecast_years", 20)),
+        forecast_return_pessimistic=float(config.get("forecast_return_pessimistic", 4)),
+        forecast_return_neutral=float(config.get("forecast_return_neutral", 8)),
+        forecast_return_optimistic=float(config.get("forecast_return_optimistic", 12)),
     )
 
 

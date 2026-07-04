@@ -36,6 +36,10 @@ const form = reactive({
   mainland_sp500_code: '513500',
   hk_nasdaq_code: 'QQQM',
   hk_sp500_code: 'VOO',
+  forecast_years: 20,
+  forecast_return_pessimistic: 4,
+  forecast_return_neutral: 8,
+  forecast_return_optimistic: 12,
 })
 
 async function loadData() {
@@ -149,6 +153,21 @@ async function save() {
         <NFormItem label="香港标普代码">
           <NInput v-model:value="form.hk_sp500_code" />
         </NFormItem>
+
+        <NDivider title-placement="left">财富预测默认值</NDivider>
+        <NFormItem label="默认预测年限">
+          <NInputNumber v-model:value="form.forecast_years" :min="1" :max="40" style="width: 100%" />
+        </NFormItem>
+        <NFormItem label="悲观年化 %">
+          <NInputNumber v-model:value="form.forecast_return_pessimistic" :step="0.5" style="width: 100%" />
+        </NFormItem>
+        <NFormItem label="中性年化 %">
+          <NInputNumber v-model:value="form.forecast_return_neutral" :step="0.5" style="width: 100%" />
+        </NFormItem>
+        <NFormItem label="乐观年化 %">
+          <NInputNumber v-model:value="form.forecast_return_optimistic" :step="0.5" style="width: 100%" />
+        </NFormItem>
+        <p class="hint-text">财富预测页可临时改年限与收益率；此处保存为默认值。</p>
 
         <NFormItem>
           <NButton type="primary" @click="save">保存配置</NButton>

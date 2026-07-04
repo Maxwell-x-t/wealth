@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -117,6 +117,10 @@ class AllocationTarget(BaseModel):
     mainland_sp500_code: str = "513500"
     hk_nasdaq_code: str = "QQQM"
     hk_sp500_code: str = "VOO"
+    forecast_years: int = 20
+    forecast_return_pessimistic: float = 4
+    forecast_return_neutral: float = 8
+    forecast_return_optimistic: float = 12
 
     @field_validator("nasdaq", "sp500", "a_share", "gold", "cash", "qdii")
     @classmethod
@@ -237,3 +241,38 @@ class AssetSnapshotPoint(BaseModel):
     total_assets_cny: float
     net_investment_cny: float
     total_return_cny: float
+
+
+class ForecastPoint(BaseModel):
+    year_offset: int
+    year: int
+    year_label: str
+    assets_cny: float
+    principal_cny: float
+    profit_cny: float
+    return_rate: Optional[float]
+
+
+class ForecastScenario(BaseModel):
+    key: str
+    label: str
+    annual_return_pct: float
+    points: List[ForecastPoint]
+    final_assets_cny: float
+    final_principal_cny: float
+    final_profit_cny: float
+    final_return_rate: Optional[float]
+
+
+class ForecastContributionYear(BaseModel):
+    year: int
+    amount_cny: float
+
+
+class WealthForecast(BaseModel):
+    current_assets_cny: float
+    current_net_investment_cny: float
+    years: int
+    rates: Dict[str, float]
+    contribution_by_year: List[ForecastContributionYear]
+    scenarios: List[ForecastScenario]

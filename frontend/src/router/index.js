@@ -6,12 +6,14 @@ import ConfigView from '../views/ConfigView.vue'
 import InstrumentsView from '../views/InstrumentsView.vue'
 import InvestmentPlansView from '../views/InvestmentPlansView.vue'
 import ExchangeRatesView from '../views/ExchangeRatesView.vue'
+import ForecastView from '../views/ForecastView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', name: 'dashboard', component: DashboardView },
     { path: '/plans', name: 'plans', component: InvestmentPlansView },
+    { path: '/forecast', name: 'forecast', component: ForecastView },
     { path: '/transactions', name: 'transactions', component: TransactionsView },
     { path: '/instruments', name: 'instruments', component: InstrumentsView },
     { path: '/prices', name: 'prices', component: PricesView },
