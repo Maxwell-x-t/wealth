@@ -66,6 +66,24 @@ def find_instrument(db: Session, account_name: str, code: str) -> Optional[Instr
     )
 
 
+def find_instruments_by_account_category(
+    db: Session,
+    account_name: str,
+    category: str,
+) -> List[Instrument]:
+    return (
+        db.query(Instrument)
+        .join(Account)
+        .filter(
+            Account.name == account_name,
+            Instrument.category == category,
+            Instrument.is_active.is_(True),
+        )
+        .order_by(Instrument.id)
+        .all()
+    )
+
+
 def compute_rebalance_detail(db: Session, config: dict, metrics: dict) -> dict:
     total_assets = metrics["total_assets_cny"]
     account_gaps = compute_account_gaps(

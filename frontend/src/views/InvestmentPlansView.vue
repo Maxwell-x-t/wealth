@@ -31,6 +31,7 @@ const statusMap = {
   pending: { label: '待执行', type: 'default' },
   today: { label: '今日', type: 'warning' },
   done: { label: '已完成', type: 'success' },
+  partial: { label: '部分完成', type: 'warning' },
   overdue: { label: '已逾期', type: 'error' },
   merged: { label: '已合并', type: 'info' },
 }
@@ -67,63 +68,83 @@ function renderAmount(row) {
   } else if (row.base_amount_cny && row.base_amount_cny !== row.amount_cny) {
     lines.push(`原计划 ${formatMoney(row.base_amount_cny)}`)
   }
+  if (row.matched_amount_cny > 0 && row.status !== 'done') {
+    lines.push(`已投入 ${formatMoney(row.matched_amount_cny)}`)
+  }
   return h('div', { style: 'line-height: 1.4' }, lines.map((text, index) =>
     h('div', { style: index > 0 ? 'font-size: 12px; color: #8b98a5' : '' }, text),
   ))
 }
+
+function renderMatched(row) {
+  if (!row.matched_amount_cny) return '-'
+  const lines = [formatMoney(row.matched_amount_cny)]
+  if (row.shortfall_cny > 0) {
+    lines.push(`欠 ${formatMoney(row.shortfall_cny)}`)
+  }
+  return h('div', { style: 'line-height: 1.4' }, lines.map((text, index) =>
+    h('div', { style: index > 0 ? 'font-size: 12px; color: #e88080' : '' }, text),
+  ))
+}
+
 function goRecord(row) {
-  if (!row.instrument_id) return
   router.push({
     path: '/transactions',
     query: {
       from_plan: '1',
-      instrument_id: String(row.instrument_id),
+      account: row.account,
+      category: row.category,
       plan_date: row.plan_date,
-      note: `计划:${row.phase_label} ${row.category_label} ${row.instrument_code}`,
+      note: `计划:${row.phase_label} ${row.target_label}`,
     },
   })
 }
 
-function buildColumns() {
-  return [
-  { title: '日期', key: 'plan_date', width: 110 },
-  {
-    title: '阶段',
-    key: 'phase_label',
-    width: 70,
-    render: (row) => row.phase_label,
-  },
-  { title: '账户', key: 'account', width: 70 },
-  { title: '品种', key: 'instrument_name', width: 140 },
-  { title: '代码', key: 'instrument_code', width: 90 },
-  { title: '分类', key: 'category_label', width: 70 },
-  { title: '应投金额', key: 'amount_cny', width: 160, render: (row) => renderAmount(row) },
-  {
-    title: '状态',
-    key: 'status',
-    width: 90,
-    render: (row) => {
-      const meta = statusMap[row.status] || statusMap.pending
-      return h(NTag, { type: meta.type, size: 'small' }, { default: () => meta.label })
-    },
-  },
-  {
-    title: '操作',
-    key: 'actions',
-    width: 100,
-    render: (row) =>
-      row.status === 'done' || row.status === 'merged'
-        ? '-'
-        : h(
-            NButton,
-            { size: 'small', type: 'primary', disabled: !row.instrument_id, onClick: () => goRecord(row) },
-            { default: () => '录入' },
-          ),
-  },
-]
+function renderStatus(row) {
+  const meta = statusMap[row.status] || statusMap.pending
+  return h(NTag, { type: meta.type, size: 'small' }, { default: () => meta.label })
 }
 
-const columns = buildColumns()
+function renderActions(row) {
+  if (row.status === 'done' || row.status === 'merged' || row.status === 'partial') {
+    return '-'
+  }
+  return h(
+    NButton,
+    { size: 'small', type: 'primary', onClick: () => goRecord(row) },
+    { default: () => '录入' },
+  )
+}
+
+function buildColumns({ history = false } = {}) {
+  const cols = [
+    { title: '日期', key: 'plan_date', width: 110 },
+    { title: '阶段', key: 'phase_label', width: 70 },
+    { title: '账户', key: 'account', width: 70 },
+    { title: '标的', key: 'target_label', width: 120 },
+  ]
+
+  if (history) {
+    cols.push(
+      { title: '计划金额', key: 'base_amount_cny', width: 110, render: (row) => formatMoney(row.base_amount_cny) },
+      { title: '实际投入', key: 'matched_amount_cny', width: 120, render: (row) => renderMatched(row) },
+      { title: '应投合计', key: 'amount_cny', width: 110, render: (row) => formatMoney(row.amount_cny) },
+    )
+  } else {
+    cols.push(
+      { title: '应投金额', key: 'amount_cny', width: 160, render: (row) => renderAmount(row) },
+    )
+  }
+
+  cols.push(
+    { title: '状态', key: 'status', width: 100, render: (row) => renderStatus(row) },
+    { title: '操作', key: 'actions', width: 100, render: (row) => renderActions(row) },
+  )
+  return cols
+}
+
+const upcomingColumns = buildColumns()
+const historyColumns = buildColumns({ history: true })
 
 const buildingProgress = computed(() => {
   if (!overview.value?.building_total) return 0
@@ -136,7 +157,7 @@ const buildingProgress = computed(() => {
     <div class="header-row">
       <div>
         <h1 class="page-title">投资计划</h1>
-        <p class="page-desc">逾期金额自动合并到下一笔；大额买入可一次核销多周欠投</p>
+        <p class="page-desc">部分完成仅顺延差额；窗口内投入不足 80% 记为部分完成</p>
       </div>
       <NSelect
         v-model:value="phaseFilter"
@@ -154,9 +175,11 @@ const buildingProgress = computed(() => {
           <div class="metric-sub">{{ overview.building_done }} / {{ overview.building_total }} 笔</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">定投已完成</div>
-          <div class="metric-value">{{ overview.dca_done }}</div>
-          <div class="metric-sub">笔历史计划</div>
+          <div class="metric-label">定投执行率</div>
+          <div class="metric-value">{{ overview.dca_execution_rate }}%</div>
+          <div class="metric-sub">
+            完成 {{ overview.dca_done }} · 部分 {{ overview.dca_partial }} / {{ overview.dca_elapsed }}
+          </div>
         </div>
         <div class="metric-card">
           <div class="metric-label">逾期计划</div>
@@ -168,7 +191,7 @@ const buildingProgress = computed(() => {
           <div class="metric-label">下一笔计划</div>
           <div class="metric-value" style="font-size: 16px">
             <template v-if="overview.next_item">
-              {{ overview.next_item.plan_date }} {{ overview.next_item.instrument_code }}
+              {{ overview.next_item.plan_date }} {{ overview.next_item.target_label }}
             </template>
             <template v-else>-</template>
           </div>
@@ -181,7 +204,7 @@ const buildingProgress = computed(() => {
               （含补投 {{ formatMoney(overview.next_item.rolled_over_amount_cny) }}）
             </span>
             <NButton
-              v-if="overview.next_item.status !== 'done' && overview.next_item.instrument_id"
+              v-if="overview.next_item.status !== 'done'"
               size="tiny"
               type="primary"
               style="margin-left: 8px"
@@ -210,8 +233,18 @@ const buildingProgress = computed(() => {
         <NTabPane name="upcoming" tab="即将执行">
           <div class="panel">
             <NDataTable
-              :columns="columns"
+              :columns="upcomingColumns"
               :data="overview.upcoming"
+              :bordered="false"
+              size="small"
+            />
+          </div>
+        </NTabPane>
+        <NTabPane name="history" tab="历史记录">
+          <div class="panel">
+            <NDataTable
+              :columns="historyColumns"
+              :data="overview.history"
               :bordered="false"
               size="small"
             />
@@ -219,13 +252,13 @@ const buildingProgress = computed(() => {
         </NTabPane>
         <NTabPane name="calendar" tab="未来三个月">
           <div class="panel">
-            <NDataTable :columns="columns" :data="plans" :bordered="false" size="small" />
+            <NDataTable :columns="upcomingColumns" :data="plans" :bordered="false" size="small" />
           </div>
         </NTabPane>
         <NTabPane v-if="overview.overdue.length" name="overdue" tab="逾期">
           <div class="panel">
             <NDataTable
-              :columns="columns"
+              :columns="upcomingColumns"
               :data="overview.overdue"
               :bordered="false"
               size="small"

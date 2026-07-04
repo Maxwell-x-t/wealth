@@ -88,15 +88,48 @@ onMounted(async () => {
 })
 
 async function applyPlanFromQuery() {
-  if (route.query.from_plan !== '1' || !route.query.instrument_id) return
+  if (route.query.from_plan !== '1') return
 
-  const instrumentId = Number(route.query.instrument_id)
-  const instrument = instruments.value.find((item) => item.id === instrumentId)
-  if (!instrument) return
+  if (route.query.instrument_id) {
+    const instrumentId = Number(route.query.instrument_id)
+    const instrument = instruments.value.find((item) => item.id === instrumentId)
+    if (!instrument) return
+
+    editingId.value = null
+    form.instrument_id = instrumentId
+    form.account_id = instrument.account_id
+    form.side = 'buy'
+    form.quantity = null
+    form.price = null
+    form.fee = 0
+    form.note = route.query.note ? String(route.query.note) : ''
+    if (route.query.plan_date) {
+      form.trade_date = new Date(String(route.query.plan_date)).getTime()
+    }
+    applyInstrumentDefaults()
+    showModal.value = true
+    router.replace({ path: '/transactions' })
+    return
+  }
+
+  if (!route.query.account || !route.query.category) return
+
+  const account = accounts.value.find((item) => item.name === String(route.query.account))
+  if (!account) return
+
+  const category = String(route.query.category)
+  const matches = instruments.value.filter(
+    (item) => item.account_id === account.id && item.category === category,
+  )
+  if (!matches.length) {
+    message.warning('该账户下暂无对应标的品种，请先在品种管理中添加')
+    router.replace({ path: '/transactions' })
+    return
+  }
 
   editingId.value = null
-  form.instrument_id = instrumentId
-  form.account_id = instrument.account_id
+  form.account_id = account.id
+  form.instrument_id = matches[0].id
   form.side = 'buy'
   form.quantity = null
   form.price = null

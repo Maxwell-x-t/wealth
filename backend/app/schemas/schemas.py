@@ -188,11 +188,11 @@ class InvestmentPlanItem(BaseModel):
     account: str
     category: str
     category_label: str
-    instrument_code: str
-    instrument_name: str
-    instrument_id: Optional[int]
+    target_label: str
     amount_cny: float
     base_amount_cny: float
+    matched_amount_cny: float = 0
+    shortfall_cny: float = 0
     rolled_over_amount_cny: float = 0
     rolled_over_count: int = 0
     status: str
@@ -206,6 +206,10 @@ class InvestmentPlanOverview(BaseModel):
     building_total: int
     building_done: int
     dca_done: int
+    dca_partial: int = 0
+    dca_elapsed: int = 0
+    dca_execution_rate: float = 0
+    history: List[InvestmentPlanItem] = []
     next_item: Optional[InvestmentPlanItem]
 
 

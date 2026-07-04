@@ -7,8 +7,9 @@ from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from app.models.models import Instrument, Transaction
-from app.services.allocation import find_instrument, resolve_instrument_codes
+from app.services.allocation import find_instruments_by_account_category
 from app.services.calendar import scheduled_weekly_days_in_month
+from app.services.holdings import CATEGORY_LABELS
 
 MATCH_WINDOW_DAYS = 5
 AMOUNT_TOLERANCE = 0.2
@@ -45,6 +46,14 @@ def _group_key(item: dict) -> Tuple[str, str]:
     return item["account"], item["category"]
 
 
+def _category_label(category: str) -> str:
+    return CATEGORY_LABELS.get(category, category)
+
+
+def _target_label(account_name: str, category: str) -> str:
+    return f"{account_name} · {_category_label(category)}"
+
+
 def _tx_amount_cny(tx: Transaction, instrument: Instrument, usd_cny_rate: float) -> float:
     amount = float(tx.amount) + float(tx.fee)
     if instrument.currency == "USD":
@@ -56,6 +65,14 @@ def _amounts_match(tx_amount: float, plan_amount: float) -> bool:
     if plan_amount <= 0:
         return True
     return abs(tx_amount - plan_amount) / max(plan_amount, 1) <= AMOUNT_TOLERANCE
+
+
+def _window_bounds(plan_date: date) -> tuple[date, date]:
+    return plan_date - timedelta(days=MATCH_WINDOW_DAYS), plan_date + timedelta(days=MATCH_WINDOW_DAYS)
+
+
+def _window_closed(plan_date: date) -> bool:
+    return date.today() > _window_bounds(plan_date)[1]
 
 
 def _date_status(plan_date: date) -> str:
@@ -71,66 +88,151 @@ def _init_plan_fields(item: dict) -> None:
     item["base_amount_cny"] = round(float(item["amount_cny"]), 2)
     item["rolled_over_amount_cny"] = 0.0
     item["rolled_over_count"] = 0
+    item["matched_amount_cny"] = 0.0
+    item["shortfall_cny"] = 0.0
+
+
+def _sum_available_in_window(
+    txs: list[Transaction],
+    tx_remaining: dict[int, float],
+    window_start: date,
+    window_end: date,
+) -> float:
+    return sum(
+        tx_remaining.get(tx.id, 0.0)
+        for tx in txs
+        if window_start <= tx.trade_date <= window_end and tx_remaining.get(tx.id, 0.0) > 0
+    )
+
+
+def _consume_for_plan(
+    txs: list[Transaction],
+    tx_remaining: dict[int, float],
+    window_start: date,
+    window_end: date,
+    target_amount: float,
+) -> float:
+    if target_amount <= 0:
+        return 0.0
+
+    consumed = 0.0
+    for tx in txs:
+        if consumed >= target_amount:
+            break
+        if not (window_start <= tx.trade_date <= window_end):
+            continue
+        remaining = tx_remaining.get(tx.id, 0.0)
+        if remaining <= 0:
+            continue
+        take = min(remaining, target_amount - consumed)
+        consumed += take
+        tx_remaining[tx.id] = remaining - take
+    return round(consumed, 2)
+
+
+def _apply_match_result(plan: dict, needed: float, available: float, window_closed: bool) -> float:
+    """根据窗口内可用金额更新计划状态，返回应从交易池扣减的金额。"""
+    min_needed = needed * (1 - AMOUNT_TOLERANCE)
+
+    if available >= min_needed or _amounts_match(available, needed):
+        consumed = min(available, needed)
+        plan["status"] = "done"
+        plan["matched_amount_cny"] = round(consumed, 2)
+        plan["shortfall_cny"] = 0.0
+        return consumed
+
+    if available > 0 and window_closed:
+        plan["status"] = "partial"
+        plan["matched_amount_cny"] = round(available, 2)
+        plan["shortfall_cny"] = round(max(0.0, needed - available), 2)
+        return available
+
+    if available > 0:
+        plan["status"] = _date_status(plan["plan_date"])
+        plan["matched_amount_cny"] = round(available, 2)
+        plan["shortfall_cny"] = 0.0
+        return available
+
+    plan["status"] = _date_status(plan["plan_date"])
+    plan["matched_amount_cny"] = 0.0
+    plan["shortfall_cny"] = 0.0
+    return 0.0
+
+
+def _load_group_transactions(
+    db: Session,
+    account_name: str,
+    category: str,
+    min_date: date,
+    max_date: date,
+    usd_cny_rate: float,
+) -> tuple[list[Transaction], dict[int, Instrument], dict[int, float]]:
+    instruments = find_instruments_by_account_category(db, account_name, category)
+    if not instruments:
+        return [], {}, {}
+
+    instrument_by_id = {instrument.id: instrument for instrument in instruments}
+    instrument_ids = list(instrument_by_id.keys())
+    txs = (
+        db.query(Transaction)
+        .filter(
+            Transaction.instrument_id.in_(instrument_ids),
+            Transaction.side == "buy",
+            Transaction.trade_date >= min_date,
+            Transaction.trade_date <= max_date,
+        )
+        .order_by(Transaction.trade_date, Transaction.id)
+        .all()
+    )
+    tx_remaining = {
+        tx.id: _tx_amount_cny(tx, instrument_by_id[tx.instrument_id], usd_cny_rate) for tx in txs
+    }
+    return txs, instrument_by_id, tx_remaining
 
 
 def _group_match_transactions(items: List[dict], db: Session, usd_cny_rate: float) -> None:
-    """按账户+分类，从旧到新用买入交易核销计划（支持单笔覆盖多周）。"""
+    """按账户+标的大类，从旧到新核销计划（支持部分完成与单笔覆盖多周）。"""
     by_group: dict[Tuple[str, str], List[dict]] = defaultdict(list)
     for item in items:
         by_group[_group_key(item)].append(item)
 
     for group in by_group.values():
         group.sort(key=lambda row: row["plan_date"])
-        instrument_id = next((row["instrument_id"] for row in group if row["instrument_id"]), None)
-        if not instrument_id:
+        min_date = group[0]["plan_date"] - timedelta(days=MATCH_WINDOW_DAYS)
+        max_date = group[-1]["plan_date"] + timedelta(days=MATCH_WINDOW_DAYS)
+        txs, _, tx_remaining = _load_group_transactions(
+            db,
+            group[0]["account"],
+            group[0]["category"],
+            min_date,
+            max_date,
+            usd_cny_rate,
+        )
+        if not txs:
             for row in group:
                 if row["status"] != "done":
                     row["status"] = _date_status(row["plan_date"])
             continue
-
-        instrument = db.query(Instrument).filter(Instrument.id == instrument_id).one()
-        min_date = group[0]["plan_date"] - timedelta(days=MATCH_WINDOW_DAYS)
-        max_date = group[-1]["plan_date"] + timedelta(days=MATCH_WINDOW_DAYS)
-        txs = (
-            db.query(Transaction)
-            .filter(
-                Transaction.instrument_id == instrument_id,
-                Transaction.side == "buy",
-                Transaction.trade_date >= min_date,
-                Transaction.trade_date <= max_date,
-            )
-            .order_by(Transaction.trade_date, Transaction.id)
-            .all()
-        )
-        tx_remaining = {tx.id: _tx_amount_cny(tx, instrument, usd_cny_rate) for tx in txs}
 
         for plan in group:
             if plan["status"] == "done":
                 continue
 
             needed = float(plan["base_amount_cny"])
-            window_start = plan["plan_date"] - timedelta(days=MATCH_WINDOW_DAYS)
-            window_end = plan["plan_date"] + timedelta(days=MATCH_WINDOW_DAYS)
-
-            for tx in txs:
-                remaining = tx_remaining.get(tx.id, 0.0)
-                if remaining <= 0:
-                    continue
-                if not (window_start <= tx.trade_date <= window_end):
-                    continue
-
-                min_needed = needed * (1 - AMOUNT_TOLERANCE)
-                if _amounts_match(remaining, needed) or remaining >= min_needed:
-                    plan["status"] = "done"
-                    tx_remaining[tx.id] = max(0.0, remaining - needed)
-                    break
-
-            if plan["status"] != "done":
-                plan["status"] = _date_status(plan["plan_date"])
+            window_start, window_end = _window_bounds(plan["plan_date"])
+            available = _sum_available_in_window(txs, tx_remaining, window_start, window_end)
+            consume_amount = _apply_match_result(
+                plan,
+                needed,
+                available,
+                _window_closed(plan["plan_date"]),
+            )
+            if consume_amount > 0:
+                _consume_for_plan(txs, tx_remaining, window_start, window_end, consume_amount)
 
 
 def _apply_rollover_merges(items: List[dict]) -> None:
-    """将逾期未执行金额合并到同组下一笔待执行/今日计划。"""
+    """逾期未执行全额顺延；部分完成仅顺延差额。"""
     by_group: dict[Tuple[str, str], List[dict]] = defaultdict(list)
     for item in items:
         by_group[_group_key(item)].append(item)
@@ -141,8 +243,6 @@ def _apply_rollover_merges(items: List[dict]) -> None:
         pending_count = 0
 
         for item in group:
-            _init_plan_fields(item)
-
             if item["status"] == "done":
                 continue
 
@@ -150,6 +250,13 @@ def _apply_rollover_merges(items: List[dict]) -> None:
                 pending_rollover += float(item["base_amount_cny"])
                 pending_count += 1
                 item["status"] = "merged"
+                continue
+
+            if item["status"] == "partial":
+                shortfall = float(item.get("shortfall_cny", 0))
+                if shortfall > 0:
+                    pending_rollover += shortfall
+                    pending_count += 1
                 continue
 
             if item["status"] in ("pending", "today") and pending_rollover > 0:
@@ -167,7 +274,6 @@ def _rematch_rolled_targets(items: List[dict], db: Session, usd_cny_rate: float)
         for item in items
         if item["status"] in ("pending", "today", "overdue")
         and float(item.get("rolled_over_amount_cny", 0)) > 0
-        and item.get("instrument_id")
     ]
     if not targets:
         return
@@ -178,40 +284,31 @@ def _rematch_rolled_targets(items: List[dict], db: Session, usd_cny_rate: float)
 
     for group in by_group.values():
         group.sort(key=lambda row: row["plan_date"])
-        instrument_id = group[0]["instrument_id"]
-        instrument = db.query(Instrument).filter(Instrument.id == instrument_id).one()
-
         min_date = min(row["plan_date"] for row in group) - timedelta(days=MATCH_WINDOW_DAYS)
         max_date = max(row["plan_date"] for row in group) + timedelta(days=MATCH_WINDOW_DAYS)
-        txs = (
-            db.query(Transaction)
-            .filter(
-                Transaction.instrument_id == instrument_id,
-                Transaction.side == "buy",
-                Transaction.trade_date >= min_date,
-                Transaction.trade_date <= max_date,
-            )
-            .order_by(Transaction.trade_date, Transaction.id)
-            .all()
+        txs, _, tx_remaining = _load_group_transactions(
+            db,
+            group[0]["account"],
+            group[0]["category"],
+            min_date,
+            max_date,
+            usd_cny_rate,
         )
-        tx_remaining = {tx.id: _tx_amount_cny(tx, instrument, usd_cny_rate) for tx in txs}
+        if not txs:
+            continue
 
         for plan in group:
             needed = float(plan["amount_cny"])
-            window_start = plan["plan_date"] - timedelta(days=MATCH_WINDOW_DAYS)
-            window_end = plan["plan_date"] + timedelta(days=MATCH_WINDOW_DAYS)
-            min_needed = needed * (1 - AMOUNT_TOLERANCE)
-
-            for tx in txs:
-                remaining = tx_remaining.get(tx.id, 0.0)
-                if remaining <= 0:
-                    continue
-                if not (window_start <= tx.trade_date <= window_end):
-                    continue
-                if _amounts_match(remaining, needed) or remaining >= min_needed:
-                    plan["status"] = "done"
-                    tx_remaining[tx.id] = max(0.0, remaining - needed)
-                    break
+            window_start, window_end = _window_bounds(plan["plan_date"])
+            available = _sum_available_in_window(txs, tx_remaining, window_start, window_end)
+            consume_amount = _apply_match_result(
+                plan,
+                needed,
+                available,
+                _window_closed(plan["plan_date"]),
+            )
+            if consume_amount > 0:
+                _consume_for_plan(txs, tx_remaining, window_start, window_end, consume_amount)
 
 
 def _finalize_plan_items(items: List[dict], db: Session, usd_cny_rate: float) -> List[dict]:
@@ -231,15 +328,12 @@ def _append_plan_item(
     phase: str,
     account_name: str,
     category: str,
-    code: str,
     amount_cny: float,
     week_index: int,
-    db: Session,
 ) -> None:
     if amount_cny <= 0:
         return
 
-    instrument = find_instrument(db, account_name, code)
     items.append(
         {
             "plan_date": plan_date,
@@ -248,10 +342,8 @@ def _append_plan_item(
             "week_index": week_index,
             "account": account_name,
             "category": category,
-            "category_label": "纳指" if category == "nasdaq" else "标普",
-            "instrument_code": code,
-            "instrument_name": instrument.name if instrument else code,
-            "instrument_id": instrument.id if instrument else None,
+            "category_label": _category_label(category),
+            "target_label": _target_label(account_name, category),
             "amount_cny": round(amount_cny, 2),
             "status": "pending",
         }
@@ -272,7 +364,6 @@ def generate_investment_plans(
     mainland_pct = float(config.get("mainland", 60))
     hk_pct = float(config.get("hk", 40))
     usd_cny_rate = float(config.get("usd_cny_rate", 7.2))
-    codes = resolve_instrument_codes(config)
 
     if end is None:
         end_year, end_month = _month_offset(plan_start, horizon_years * 12)
@@ -322,17 +413,14 @@ def generate_investment_plans(
                         continue
 
                     account_amount = weekly_amount * account_pct / 100
-                    code = codes["mainland" if account_name == "大陆" else "hk"][category]
                     _append_plan_item(
                         items,
                         plan_day,
                         phase,
                         account_name,
                         category,
-                        code,
                         account_amount,
                         week_index,
-                        db,
                     )
             else:
                 for account_name, account_pct, market_days in (
@@ -347,7 +435,6 @@ def generate_investment_plans(
 
                     account_weekly = cn_weekly * account_pct / 100
                     for category, cat_pct in (("nasdaq", nasdaq_pct), ("sp500", sp500_pct)):
-                        code = codes["mainland" if account_name == "大陆" else "hk"][category]
                         amount = account_weekly * cat_pct / 100
                         _append_plan_item(
                             items,
@@ -355,10 +442,8 @@ def generate_investment_plans(
                             phase,
                             account_name,
                             category,
-                            code,
                             amount,
                             week_index,
-                            db,
                         )
 
     items.sort(key=lambda item: (item["plan_date"], item["account"], item["category"]))
@@ -378,15 +463,28 @@ def build_plan_overview(db: Session, config: dict) -> dict:
     upcoming = [
         item
         for item in plans
-        if item["plan_date"] >= today and item["status"] not in ("done", "merged")
+        if item["plan_date"] >= today and item["status"] not in ("done", "merged", "partial")
     ][:8]
     overdue = [item for item in plans if item["status"] == "overdue"]
 
     building_plans = [item for item in plans if item["phase"] == "building"]
     dca_plans = [item for item in plans if item["phase"] == "dca"]
+    dca_elapsed = [item for item in dca_plans if item["plan_date"] <= today]
     building_done = sum(1 for item in building_plans if item["status"] == "done")
-    dca_done = sum(1 for item in dca_plans if item["status"] == "done" and item["plan_date"] <= today)
+    dca_done = sum(1 for item in dca_elapsed if item["status"] == "done")
+    dca_partial = sum(1 for item in dca_elapsed if item["status"] == "partial")
     merged_count = sum(1 for item in plans if item["status"] == "merged" and item["plan_date"] <= today)
+    dca_execution_rate = (
+        round(dca_done / len(dca_elapsed) * 100, 1) if dca_elapsed else 0.0
+    )
+
+    history = [
+        item
+        for item in dca_elapsed
+        if item["status"] in ("done", "partial", "merged", "overdue")
+    ]
+    history.sort(key=lambda item: (item["plan_date"], item["account"], item["category"]), reverse=True)
+    history = history[:100]
 
     return {
         "upcoming": upcoming,
@@ -396,5 +494,9 @@ def build_plan_overview(db: Session, config: dict) -> dict:
         "building_total": len(building_plans),
         "building_done": building_done,
         "dca_done": dca_done,
+        "dca_partial": dca_partial,
+        "dca_elapsed": len(dca_elapsed),
+        "dca_execution_rate": dca_execution_rate,
+        "history": history,
         "next_item": upcoming[0] if upcoming else None,
     }
