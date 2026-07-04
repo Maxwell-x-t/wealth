@@ -139,6 +139,11 @@ class AllocationTarget(BaseModel):
     forecast_return_pessimistic: float = 4
     forecast_return_neutral: float = 8
     forecast_return_optimistic: float = 12
+    forecast_inflation_pct: float = 2
+    forecast_mc_volatility: float = 15
+    forecast_mc_paths: int = 500
+    sync_enabled: bool = False
+    sync_interval_hours: int = 24
 
     @field_validator("nasdaq", "sp500", "a_share", "gold", "cash", "qdii")
     @classmethod
@@ -269,6 +274,10 @@ class ForecastPoint(BaseModel):
     principal_cny: float
     profit_cny: float
     return_rate: Optional[float]
+    assets_real_cny: Optional[float] = None
+    principal_real_cny: Optional[float] = None
+    profit_real_cny: Optional[float] = None
+    return_rate_real: Optional[float] = None
 
 
 class ForecastScenario(BaseModel):
@@ -280,6 +289,10 @@ class ForecastScenario(BaseModel):
     final_principal_cny: float
     final_profit_cny: float
     final_return_rate: Optional[float]
+    final_assets_real_cny: Optional[float] = None
+    final_principal_real_cny: Optional[float] = None
+    final_profit_real_cny: Optional[float] = None
+    final_return_rate_real: Optional[float] = None
 
 
 class ForecastContributionYear(BaseModel):
@@ -287,10 +300,181 @@ class ForecastContributionYear(BaseModel):
     amount_cny: float
 
 
+class MonteCarloPoint(BaseModel):
+    year_offset: int
+    year: int
+    year_label: str
+    p10_cny: float
+    p50_cny: float
+    p90_cny: float
+    p10_real_cny: Optional[float] = None
+    p50_real_cny: Optional[float] = None
+    p90_real_cny: Optional[float] = None
+
+
+class MonteCarloResult(BaseModel):
+    paths: int
+    mean_return_pct: float
+    volatility_pct: float
+    points: List[MonteCarloPoint]
+    final_p10_cny: float
+    final_p50_cny: float
+    final_p90_cny: float
+    final_p10_real_cny: Optional[float] = None
+    final_p50_real_cny: Optional[float] = None
+    final_p90_real_cny: Optional[float] = None
+
+
 class WealthForecast(BaseModel):
     current_assets_cny: float
     current_net_investment_cny: float
     years: int
     rates: Dict[str, float]
+    use_inflation: bool = False
+    inflation_pct: Optional[float] = None
+    use_monte_carlo: bool = False
     contribution_by_year: List[ForecastContributionYear]
     scenarios: List[ForecastScenario]
+    monte_carlo: Optional[MonteCarloResult] = None
+
+
+class RiskPoint(BaseModel):
+    year_offset: int
+    assets_cny: float
+
+
+class RiskScenario(BaseModel):
+    key: str
+    label: str
+    drawdown_pct: float
+    assets_after_crash_cny: float
+    loss_cny: float
+    recovery_years: Optional[int]
+    recovery_return_pct: float
+    horizon_years: int
+    final_assets_cny: float
+    final_principal_cny: float
+    final_profit_cny: float
+    final_return_rate: Optional[float]
+    points: List[RiskPoint]
+
+
+class RiskSimulation(BaseModel):
+    current_assets_cny: float
+    current_net_investment_cny: float
+    annual_contribution_cny: float
+    recovery_return_pct: float
+    horizon_years: int
+    custom_scenarios: List[RiskScenario]
+    historical_scenarios: List[RiskScenario]
+
+
+class AnnualReviewItem(BaseModel):
+    key: str
+    label: str
+    checked: bool
+
+
+class AnnualReviewHint(BaseModel):
+    key: str
+    level: str
+    text: str
+
+
+class AnnualReview(BaseModel):
+    year: int
+    items: List[AnnualReviewItem]
+    done_count: int
+    total_count: int
+    completion_rate: float
+    hints: List[AnnualReviewHint]
+
+
+class AnnualReviewUpdate(BaseModel):
+    year: Optional[int] = None
+    checks: Dict[str, bool]
+
+
+class SyncStatus(BaseModel):
+    enabled: bool
+    interval_hours: int
+    scheduler_alive: bool
+    running: bool
+    last_run_at: Optional[str] = None
+    last_status: Optional[str] = None
+    last_error: Optional[str] = None
+    prices_success: int = 0
+    prices_fail: int = 0
+    fx_rate: Optional[float] = None
+    fx_source: Optional[str] = None
+
+
+class RiskPoint(BaseModel):
+    year_offset: int
+    assets_cny: float
+
+
+class RiskScenario(BaseModel):
+    key: str
+    label: str
+    drawdown_pct: float
+    assets_after_crash_cny: float
+    loss_cny: float
+    recovery_years: Optional[int]
+    recovery_return_pct: float
+    horizon_years: int
+    final_assets_cny: float
+    final_principal_cny: float
+    final_profit_cny: float
+    final_return_rate: Optional[float]
+    points: List[RiskPoint]
+
+
+class RiskSimulation(BaseModel):
+    current_assets_cny: float
+    current_net_investment_cny: float
+    annual_contribution_cny: float
+    recovery_return_pct: float
+    horizon_years: int
+    custom_scenarios: List[RiskScenario]
+    historical_scenarios: List[RiskScenario]
+
+
+class AnnualReviewItem(BaseModel):
+    key: str
+    label: str
+    checked: bool
+
+
+class AnnualReviewHint(BaseModel):
+    key: str
+    level: str
+    text: str
+
+
+class AnnualReview(BaseModel):
+    year: int
+    items: List[AnnualReviewItem]
+    done_count: int
+    total_count: int
+    completion_rate: float
+    hints: List[AnnualReviewHint]
+
+
+class AnnualReviewUpdate(BaseModel):
+    year: Optional[int] = None
+    checks: Dict[str, bool]
+
+
+class SyncStatus(BaseModel):
+    enabled: bool
+    interval_hours: int
+    scheduler_alive: bool
+    running: bool
+    last_run_at: Optional[str] = None
+    last_status: Optional[str] = None
+    last_error: Optional[str] = None
+    prices_success: int = 0
+    prices_fail: int = 0
+    fx_rate: Optional[float] = None
+    fx_source: Optional[str] = None

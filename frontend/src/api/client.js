@@ -29,6 +29,17 @@ export const getInvestmentPlanOverview = () =>
 
 export const getWealthForecast = (params = {}) =>
   client.get('/forecast', { params }).then((r) => r.data)
+export const getRiskSimulation = (params = {}) =>
+  client.get('/forecast/risk', { params }).then((r) => r.data)
+
+export const getAnnualReview = (params = {}) =>
+  client.get('/annual-review', { params }).then((r) => r.data)
+export const updateAnnualReview = (data) =>
+  client.put('/annual-review', data).then((r) => r.data)
+
+export const getSyncStatus = () => client.get('/sync/status').then((r) => r.data)
+export const runSyncNow = () =>
+  client.post('/sync/run', null, { timeout: 60000 }).then((r) => r.data)
 
 export const getPrices = () => client.get('/prices').then((r) => r.data)
 export const updatePrice = (data) => client.post('/prices', data).then((r) => r.data)

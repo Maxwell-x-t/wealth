@@ -2,8 +2,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import Base, SessionLocal, engine
-from app.routers import accounts, dashboard, exchange_rates, forecast, instruments, investment_plans, prices, transactions
+from app.routers import (
+    accounts,
+    annual_review,
+    dashboard,
+    exchange_rates,
+    forecast,
+    instruments,
+    investment_plans,
+    prices,
+    sync,
+    transactions,
+)
 from app.services.config import ensure_default_config, seed_database
+from app.services.sync_job import start_scheduler, stop_scheduler
 
 Base.metadata.create_all(bind=engine)
 
@@ -25,6 +37,8 @@ app.include_router(investment_plans.router)
 app.include_router(prices.router)
 app.include_router(dashboard.router)
 app.include_router(forecast.router)
+app.include_router(annual_review.router)
+app.include_router(sync.router)
 
 
 @app.on_event("startup")
@@ -35,6 +49,12 @@ def on_startup():
         ensure_default_config(db)
     finally:
         db.close()
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    stop_scheduler()
 
 
 @app.get("/api/health")

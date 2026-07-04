@@ -29,6 +29,11 @@ DEFAULT_CONFIG = {
     "forecast_return_pessimistic": "4",
     "forecast_return_neutral": "8",
     "forecast_return_optimistic": "12",
+    "forecast_inflation_pct": "2",
+    "forecast_mc_volatility": "15",
+    "forecast_mc_paths": "500",
+    "sync_enabled": "0",
+    "sync_interval_hours": "24",
 }
 
 

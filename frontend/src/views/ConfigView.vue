@@ -8,13 +8,17 @@ import {
   NFormItem,
   NInput,
   NInputNumber,
+  NSpace,
   NSpin,
+  NSwitch,
   useMessage,
 } from 'naive-ui'
-import { getConfig, updateConfig } from '../api/client'
+import { getConfig, getSyncStatus, runSyncNow, updateConfig } from '../api/client'
 
 const message = useMessage()
 const loading = ref(true)
+const syncing = ref(false)
+const syncStatus = ref(null)
 
 const form = reactive({
   nasdaq: 70,
@@ -40,16 +44,22 @@ const form = reactive({
   forecast_return_pessimistic: 4,
   forecast_return_neutral: 8,
   forecast_return_optimistic: 12,
+  forecast_inflation_pct: 2,
+  forecast_mc_volatility: 15,
+  forecast_mc_paths: 500,
+  sync_enabled: false,
+  sync_interval_hours: 24,
 })
 
 async function loadData() {
   loading.value = true
   try {
-    const config = await getConfig()
+    const [config, status] = await Promise.all([getConfig(), getSyncStatus()])
     Object.assign(form, config)
     if (config.plan_start_date) {
       form.plan_start_date = new Date(config.plan_start_date).getTime()
     }
+    syncStatus.value = status
   } finally {
     loading.value = false
   }
@@ -74,8 +84,27 @@ async function save() {
       plan_start_date: new Date(form.plan_start_date).toISOString().slice(0, 10),
     })
     message.success('配置已保存')
+    syncStatus.value = await getSyncStatus()
   } catch (error) {
     message.error(error.response?.data?.detail || '保存失败')
+  }
+}
+
+async function handleSyncNow() {
+  syncing.value = true
+  try {
+    syncStatus.value = await runSyncNow()
+    if (syncStatus.value.last_status === 'error') {
+      message.error(syncStatus.value.last_error || '同步失败')
+    } else {
+      message.success(
+        `同步完成：行情成功 ${syncStatus.value.prices_success}，失败 ${syncStatus.value.prices_fail}，汇率 ${syncStatus.value.fx_rate}`,
+      )
+    }
+  } catch (error) {
+    message.error(error.response?.data?.detail || '同步失败')
+  } finally {
+    syncing.value = false
   }
 }
 </script>
@@ -167,10 +196,38 @@ async function save() {
         <NFormItem label="乐观年化 %">
           <NInputNumber v-model:value="form.forecast_return_optimistic" :step="0.5" style="width: 100%" />
         </NFormItem>
-        <p class="hint-text">财富预测页可临时改年限与收益率；此处保存为默认值。</p>
+        <NFormItem label="默认通胀 %">
+          <NInputNumber v-model:value="form.forecast_inflation_pct" :min="0" :max="20" :step="0.1" style="width: 100%" />
+        </NFormItem>
+        <NFormItem label="MC 波动率 %">
+          <NInputNumber v-model:value="form.forecast_mc_volatility" :min="0" :max="80" style="width: 100%" />
+        </NFormItem>
+        <NFormItem label="MC 路径数">
+          <NInputNumber v-model:value="form.forecast_mc_paths" :min="50" :max="2000" :step="50" style="width: 100%" />
+        </NFormItem>
+        <p class="hint-text">财富预测页可勾选通胀/蒙特卡洛并临时改参数；此处为默认值。</p>
 
+        <NDivider title-placement="left">定时同步</NDivider>
+        <NFormItem label="启用定时同步">
+          <NSwitch v-model:value="form.sync_enabled" />
+        </NFormItem>
+        <NFormItem label="间隔（小时）">
+          <NInputNumber v-model:value="form.sync_interval_hours" :min="1" :max="168" style="width: 100%" />
+        </NFormItem>
+        <p class="hint-text">
+          开启后后端会按间隔自动拉取行情与汇率（需保持后端进程运行）。保存配置后生效。
+        </p>
+        <div v-if="syncStatus" class="sync-status">
+          <div>调度器：{{ syncStatus.scheduler_alive ? '运行中' : '未启动' }}</div>
+          <div>上次同步：{{ syncStatus.last_run_at || '尚未执行' }}</div>
+          <div>状态：{{ syncStatus.last_status || '-' }}</div>
+          <div v-if="syncStatus.last_error">错误：{{ syncStatus.last_error }}</div>
+        </div>
         <NFormItem>
-          <NButton type="primary" @click="save">保存配置</NButton>
+          <NSpace>
+            <NButton type="primary" @click="save">保存配置</NButton>
+            <NButton :loading="syncing" @click="handleSyncNow">立即同步行情+汇率</NButton>
+          </NSpace>
         </NFormItem>
       </NForm>
     </div>
@@ -182,5 +239,12 @@ async function save() {
   margin: -8px 0 16px 140px;
   color: #8b98a5;
   font-size: 12px;
+}
+
+.sync-status {
+  margin: 0 0 16px 140px;
+  color: #94a3b8;
+  font-size: 12px;
+  line-height: 1.6;
 }
 </style>

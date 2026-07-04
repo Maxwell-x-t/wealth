@@ -38,6 +38,11 @@ def _config_to_schema(config: dict) -> AllocationTarget:
         forecast_return_pessimistic=float(config.get("forecast_return_pessimistic", 4)),
         forecast_return_neutral=float(config.get("forecast_return_neutral", 8)),
         forecast_return_optimistic=float(config.get("forecast_return_optimistic", 12)),
+        forecast_inflation_pct=float(config.get("forecast_inflation_pct", 2)),
+        forecast_mc_volatility=float(config.get("forecast_mc_volatility", 15)),
+        forecast_mc_paths=int(float(config.get("forecast_mc_paths", 500))),
+        sync_enabled=str(config.get("sync_enabled", "0")) in ("1", "true", "True"),
+        sync_interval_hours=int(float(config.get("sync_interval_hours", 24))),
     )
 
 
@@ -45,6 +50,7 @@ def _schema_to_config(payload: AllocationTarget) -> dict:
     data = payload.model_dump()
     if data.get("plan_start_date"):
         data["plan_start_date"] = data["plan_start_date"].isoformat()
+    data["sync_enabled"] = "1" if data.get("sync_enabled") else "0"
     return data
 
 

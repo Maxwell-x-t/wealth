@@ -18,6 +18,7 @@ const menuOptions = [
   { label: () => h(RouterLink, { to: '/' }, { default: () => '总览' }), key: 'dashboard' },
   { label: () => h(RouterLink, { to: '/plans' }, { default: () => '投资计划' }), key: 'plans' },
   { label: () => h(RouterLink, { to: '/forecast' }, { default: () => '财富预测' }), key: 'forecast' },
+  { label: () => h(RouterLink, { to: '/annual-review' }, { default: () => '年度检查' }), key: 'annual-review' },
   { label: () => h(RouterLink, { to: '/transactions' }, { default: () => '交易记录' }), key: 'transactions' },
   { label: () => h(RouterLink, { to: '/instruments' }, { default: () => '品种管理' }), key: 'instruments' },
   { label: () => h(RouterLink, { to: '/prices' }, { default: () => '行情更新' }), key: 'prices' },
