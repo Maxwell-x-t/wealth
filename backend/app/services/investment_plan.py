@@ -1,18 +1,61 @@
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from datetime import date, datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import List, Optional, Set, Tuple, Union
 
 from sqlalchemy.orm import Session
 
-from app.models.models import Instrument, Transaction
+from app.models.models import AppConfig, Instrument, Transaction
 from app.services.allocation import find_instruments_by_account_category
 from app.services.calendar import scheduled_weekly_days_in_month
+from app.services.config import save_config
 from app.services.holdings import CATEGORY_LABELS
 
 MATCH_WINDOW_DAYS = 5
 AMOUNT_TOLERANCE = 0.2
+PLAN_SKIPS_KEY = "plan_skips"
+
+
+def plan_skip_key(
+    plan_date: Union[date, str],
+    account: str,
+    category: str,
+) -> str:
+    if isinstance(plan_date, date):
+        plan_date = plan_date.isoformat()
+    return f"{plan_date}|{account}|{category}"
+
+
+def load_plan_skips(db: Session) -> Set[str]:
+    row = db.query(AppConfig).filter(AppConfig.key == PLAN_SKIPS_KEY).first()
+    if not row or not row.value:
+        return set()
+    try:
+        data = json.loads(row.value)
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(data, list):
+        return set()
+    return {str(item) for item in data}
+
+
+def set_plan_skip(
+    db: Session,
+    plan_date: date,
+    account: str,
+    category: str,
+    skipped: bool,
+) -> Set[str]:
+    skips = load_plan_skips(db)
+    key = plan_skip_key(plan_date, account, category)
+    if skipped:
+        skips.add(key)
+    else:
+        skips.discard(key)
+    save_config(db, {PLAN_SKIPS_KEY: json.dumps(sorted(skips), ensure_ascii=False)})
+    return skips
 
 
 def _parse_date(value: str) -> date:
@@ -231,6 +274,18 @@ def _group_match_transactions(items: List[dict], db: Session, usd_cny_rate: floa
                 _consume_for_plan(txs, tx_remaining, window_start, window_end, consume_amount)
 
 
+def _apply_skips(items: List[dict], skips: Set[str]) -> None:
+    """手动跳过：不要求补投，差额/全额均不顺延到下一笔。"""
+    for item in items:
+        key = plan_skip_key(item["plan_date"], item["account"], item["category"])
+        if key not in skips:
+            continue
+        if item["status"] == "done":
+            continue
+        item["status"] = "skipped"
+        item["shortfall_cny"] = 0.0
+
+
 def _apply_rollover_merges(items: List[dict]) -> None:
     """窗口关闭后：逾期全额顺延，部分完成仅顺延差额。窗口未关闭不合并。"""
     by_group: dict[Tuple[str, str], List[dict]] = defaultdict(list)
@@ -243,7 +298,7 @@ def _apply_rollover_merges(items: List[dict]) -> None:
         pending_count = 0
 
         for item in group:
-            if item["status"] == "done":
+            if item["status"] in ("done", "skipped"):
                 continue
 
             if item["status"] == "overdue":
@@ -320,6 +375,7 @@ def _finalize_plan_items(items: List[dict], db: Session, usd_cny_rate: float) ->
         item["status"] = _date_status(item["plan_date"])
 
     _group_match_transactions(items, db, usd_cny_rate)
+    _apply_skips(items, load_plan_skips(db))
     _apply_rollover_merges(items)
     _rematch_rolled_targets(items, db, usd_cny_rate)
     return items
@@ -466,7 +522,8 @@ def build_plan_overview(db: Session, config: dict) -> dict:
     upcoming = [
         item
         for item in plans
-        if item["plan_date"] >= today and item["status"] not in ("done", "merged", "partial")
+        if item["plan_date"] >= today
+        and item["status"] not in ("done", "merged", "partial", "skipped")
     ][:8]
     overdue = [item for item in plans if item["status"] == "overdue"]
 
@@ -476,16 +533,19 @@ def build_plan_overview(db: Session, config: dict) -> dict:
     building_done = sum(1 for item in building_plans if item["status"] == "done")
     dca_done = sum(1 for item in dca_elapsed if item["status"] == "done")
     dca_partial = sum(1 for item in dca_elapsed if item["status"] == "partial")
+    dca_skipped = sum(1 for item in dca_elapsed if item["status"] == "skipped")
     merged_count = sum(1 for item in plans if item["status"] == "merged" and item["plan_date"] <= today)
+    # 跳过不计入未完成，执行率 = 完成 / (到期 − 跳过)
+    dca_denominator = max(len(dca_elapsed) - dca_skipped, 0)
     dca_execution_rate = (
-        round(dca_done / len(dca_elapsed) * 100, 1) if dca_elapsed else 0.0
+        round(dca_done / dca_denominator * 100, 1) if dca_denominator else 0.0
     )
 
     history = [
         item
         for item in plans
         if item["plan_date"] <= today
-        and item["status"] in ("done", "partial", "merged", "overdue")
+        and item["status"] in ("done", "partial", "merged", "overdue", "skipped")
     ]
     history.sort(key=lambda item: (item["plan_date"], item["account"], item["category"]), reverse=True)
     history = history[:100]

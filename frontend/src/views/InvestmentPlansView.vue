@@ -6,20 +6,28 @@ import {
   NButton,
   NDataTable,
   NSelect,
+  NSpace,
   NSpin,
   NTabPane,
   NTabs,
   NTag,
+  useMessage,
 } from 'naive-ui'
-import { getInvestmentPlanOverview, getInvestmentPlans } from '../api/client'
+import {
+  getInvestmentPlanOverview,
+  getInvestmentPlans,
+  skipInvestmentPlan,
+} from '../api/client'
 import { formatMoney } from '../utils/format'
 
 const router = useRouter()
+const message = useMessage()
 
 const loading = ref(true)
 const overview = ref(null)
 const plans = ref([])
 const phaseFilter = ref(null)
+const actionLoading = ref(false)
 
 const phaseOptions = [
   { label: '全部', value: null },
@@ -34,6 +42,7 @@ const statusMap = {
   partial: { label: '部分完成', type: 'warning' },
   overdue: { label: '已逾期', type: 'error' },
   merged: { label: '已合并', type: 'info' },
+  skipped: { label: '已跳过', type: 'default' },
 }
 
 async function loadData() {
@@ -100,6 +109,24 @@ function goRecord(row) {
   })
 }
 
+async function toggleSkip(row, skipped) {
+  actionLoading.value = true
+  try {
+    await skipInvestmentPlan({
+      plan_date: row.plan_date,
+      account: row.account,
+      category: row.category,
+      skipped,
+    })
+    message.success(skipped ? '已跳过，金额不顺延到下一笔' : '已取消跳过')
+    await loadData()
+  } catch (error) {
+    message.error(error.response?.data?.detail || '操作失败')
+  } finally {
+    actionLoading.value = false
+  }
+}
+
 function renderStatus(row) {
   const meta = statusMap[row.status] || statusMap.pending
   return h(NTag, { type: meta.type, size: 'small' }, { default: () => meta.label })
@@ -109,11 +136,37 @@ function renderActions(row) {
   if (row.status === 'done' || row.status === 'merged' || row.status === 'partial') {
     return '-'
   }
-  return h(
-    NButton,
-    { size: 'small', type: 'primary', onClick: () => goRecord(row) },
-    { default: () => '录入' },
-  )
+  if (row.status === 'skipped') {
+    return h(
+      NButton,
+      {
+        size: 'small',
+        quaternary: true,
+        disabled: actionLoading.value,
+        onClick: () => toggleSkip(row, false),
+      },
+      { default: () => '取消跳过' },
+    )
+  }
+  return h(NSpace, { size: 6 }, {
+    default: () => [
+      h(
+        NButton,
+        { size: 'small', type: 'primary', onClick: () => goRecord(row) },
+        { default: () => '录入' },
+      ),
+      h(
+        NButton,
+        {
+          size: 'small',
+          quaternary: true,
+          disabled: actionLoading.value,
+          onClick: () => toggleSkip(row, true),
+        },
+        { default: () => '跳过' },
+      ),
+    ],
+  })
 }
 
 function buildColumns({ history = false } = {}) {
@@ -138,7 +191,7 @@ function buildColumns({ history = false } = {}) {
 
   cols.push(
     { title: '状态', key: 'status', width: 100, render: (row) => renderStatus(row) },
-    { title: '操作', key: 'actions', width: 100, render: (row) => renderActions(row) },
+    { title: '操作', key: 'actions', width: 150, render: (row) => renderActions(row) },
   )
   return cols
 }
@@ -157,7 +210,7 @@ const buildingProgress = computed(() => {
     <div class="header-row">
       <div>
         <h1 class="page-title">投资计划</h1>
-        <p class="page-desc">部分完成仅顺延差额；窗口内投入不足 80% 记为部分完成</p>
+        <p class="page-desc">可跳过暂不执行（金额不顺延）；部分完成仅顺延差额</p>
       </div>
       <NSelect
         v-model:value="phaseFilter"
@@ -204,7 +257,7 @@ const buildingProgress = computed(() => {
               （含补投 {{ formatMoney(overview.next_item.rolled_over_amount_cny) }}）
             </span>
             <NButton
-              v-if="overview.next_item.status !== 'done'"
+              v-if="overview.next_item.status !== 'done' && overview.next_item.status !== 'skipped'"
               size="tiny"
               type="primary"
               style="margin-left: 8px"

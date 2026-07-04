@@ -26,6 +26,8 @@ export const getInvestmentPlans = (params = {}) =>
   client.get('/investment-plans', { params }).then((r) => r.data)
 export const getInvestmentPlanOverview = () =>
   client.get('/investment-plans/overview').then((r) => r.data)
+export const skipInvestmentPlan = (data) =>
+  client.post('/investment-plans/skip', data).then((r) => r.data)
 
 export const getWealthForecast = (params = {}) =>
   client.get('/forecast', { params }).then((r) => r.data)
