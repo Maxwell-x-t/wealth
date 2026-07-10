@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -43,12 +44,15 @@ def _to_decimal(value: float | Decimal | str) -> D:
     return D(str(value))
 
 
-def compute_instrument_states(db: Session) -> dict[int, InstrumentState]:
-    transactions = (
-        db.query(Transaction)
-        .order_by(Transaction.trade_date.asc(), Transaction.id.asc())
-        .all()
-    )
+def compute_instrument_states(db: Session, as_of: Optional[date] = None) -> dict[int, InstrumentState]:
+    query = db.query(Transaction).order_by(Transaction.trade_date.asc(), Transaction.id.asc())
+    if as_of is not None:
+        query = query.filter(Transaction.trade_date <= as_of)
+    transactions = query.all()
+    return _instrument_states_from_transactions(transactions)
+
+
+def _instrument_states_from_transactions(transactions: list[Transaction]) -> dict[int, InstrumentState]:
     states: dict[int, InstrumentState] = {}
 
     for tx in transactions:
@@ -85,6 +89,52 @@ def compute_instrument_states(db: Session) -> dict[int, InstrumentState]:
         states[tx.instrument_id] = state
 
     return states
+
+
+def build_historical_price_index(db: Session) -> dict[int, list[tuple[date, D]]]:
+    rows = (
+        db.query(PriceSnapshot)
+        .order_by(PriceSnapshot.snapshot_date.asc(), PriceSnapshot.id.asc())
+        .all()
+    )
+    index: dict[int, list[tuple[date, D]]] = {}
+    for row in rows:
+        index.setdefault(row.instrument_id, []).append((row.snapshot_date, _to_decimal(row.price)))
+    return index
+
+
+def price_on_date(price_index: dict[int, list[tuple[date, D]]], instrument_id: int, as_of: date) -> Optional[D]:
+    series = price_index.get(instrument_id, [])
+    chosen: Optional[D] = None
+    for snap_date, price in series:
+        if snap_date <= as_of:
+            chosen = price
+        else:
+            break
+    return chosen
+
+
+def total_assets_cny_as_of(
+    db: Session,
+    as_of: date,
+    price_index: dict[int, list[tuple[date, D]]],
+    usd_cny_rate: D,
+) -> D:
+    instruments = db.query(Instrument).filter(Instrument.is_active.is_(True)).all()
+    states = compute_instrument_states(db, as_of=as_of)
+    total = D("0")
+
+    for instrument in instruments:
+        state = states.get(instrument.id)
+        if not state or state.quantity <= 0:
+            continue
+        price = price_on_date(price_index, instrument.id, as_of)
+        if price is None or price <= 0:
+            continue
+        market_value = (state.quantity * price).quantize(TWO)
+        total += convert_market_to_cny(market_value, instrument.currency, usd_cny_rate)
+
+    return total.quantize(TWO)
 
 
 def get_latest_prices(db: Session) -> dict[int, D]:

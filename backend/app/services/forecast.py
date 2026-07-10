@@ -7,6 +7,8 @@ from typing import Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
+from app.services.account_plan import resolve_all_account_settings
+from app.services.dca_schedule_core import latest_dca_amount
 from app.services.investment_plan import generate_investment_plans
 from app.services.returns import compute_dashboard_metrics
 
@@ -19,7 +21,9 @@ SCENARIO_META = (
 
 
 def _annual_contribution_fallback(config: dict) -> float:
-    return float(config.get("dca_monthly_amount", 10000)) * 12
+    settings = resolve_all_account_settings(config)
+    monthly = sum(latest_dca_amount(item["dca_amount_schedule"]) for item in settings.values())
+    return monthly * 12
 
 
 def _build_contribution_by_year(
@@ -27,24 +31,35 @@ def _build_contribution_by_year(
     config: dict,
     start: date,
     years: int,
-) -> Dict[int, float]:
+) -> Dict[int, dict]:
     end = date(start.year + years - 1, 12, 31)
     plans = generate_investment_plans(db, config, start=start, end=end)
-    by_year: Dict[int, float] = defaultdict(float)
+    by_year: Dict[int, dict] = {}
 
     for item in plans:
         if item["status"] in ("merged", "done", "partial"):
             continue
         if item["plan_date"] < start:
             continue
-        by_year[item["plan_date"].year] += float(item["amount_cny"])
+        year = item["plan_date"].year
+        bucket = by_year.setdefault(year, {"total": 0.0, "building": 0.0, "dca": 0.0})
+        amount = float(item["amount_cny"])
+        bucket["total"] += amount
+        if item["phase"] == "building":
+            bucket["building"] += amount
+        else:
+            bucket["dca"] += amount
 
     fallback = _annual_contribution_fallback(config)
     for year in range(start.year, start.year + years):
         if year not in by_year:
-            by_year[year] = fallback
+            by_year[year] = {"total": fallback, "building": 0.0, "dca": fallback}
 
     return dict(sorted(by_year.items()))
+
+
+def _contribution_year_totals(by_year: Dict[int, dict]) -> Dict[int, float]:
+    return {year: values["total"] for year, values in by_year.items()}
 
 
 def _deflate(nominal: float, inflation_rate: float, year_offset: int) -> float:
@@ -253,7 +268,8 @@ def build_wealth_forecast(
     start_principal = float(metrics["net_investment_cny"])
     today = date.today()
 
-    contribution_by_year = _build_contribution_by_year(db, config, today, years)
+    contribution_detail = _build_contribution_by_year(db, config, today, years)
+    contribution_by_year = _contribution_year_totals(contribution_detail)
     scenarios = []
     for key, label in SCENARIO_META:
         projected = _project_scenario(
@@ -276,8 +292,13 @@ def build_wealth_forecast(
         "inflation_pct": inflation_pct_value if use_inflation else None,
         "use_monte_carlo": use_monte_carlo,
         "contribution_by_year": [
-            {"year": year, "amount_cny": round(amount, 2)}
-            for year, amount in contribution_by_year.items()
+            {
+                "year": year,
+                "amount_cny": round(values["total"], 2),
+                "building_cny": round(values["building"], 2),
+                "dca_cny": round(values["dca"], 2),
+            }
+            for year, values in contribution_detail.items()
         ],
         "scenarios": scenarios,
         "monte_carlo": None,

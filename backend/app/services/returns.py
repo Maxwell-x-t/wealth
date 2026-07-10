@@ -8,13 +8,20 @@ from sqlalchemy.orm import Session
 
 from app.models.models import Instrument, PriceSnapshot, Transaction
 from app.services.allocation import compute_rebalance_detail
+from app.services.allocation_targets import (
+    build_account_category_allocations,
+    build_category_allocations,
+)
 from app.services.holdings import (
-    CATEGORY_LABELS,
+    build_historical_price_index,
     build_holdings,
     convert_transaction_to_cny,
-    get_latest_prices,
+    total_assets_cny_as_of,
     _to_decimal,
 )
+from app.services.fx_rate import get_usd_cny_rate_as_of
+from app.services.investment_plan import generate_investment_plans
+from app.services.plan_phase import build_phase_investment_summary
 
 
 def compute_cashflows(db: Session, usd_cny_rate: float = 7.2) -> tuple[list[date], list[float]]:
@@ -92,20 +99,6 @@ def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
             mainland_assets_cny += Decimal(str(holding["market_value_cny"]))
             cny_assets += Decimal(str(holding["market_value"]))
 
-    category_values = {
-        "nasdaq": Decimal("0"),
-        "sp500": Decimal("0"),
-        "a_share": Decimal("0"),
-        "gold": Decimal("0"),
-        "cash": Decimal("0"),
-        "qdii": Decimal("0"),
-    }
-    for holding in holdings:
-        cat = holding["category"]
-        if cat in category_values:
-            category_values[cat] += Decimal(str(holding["market_value_cny"]))
-
-    category_allocations = []
     target_map = {
         "nasdaq": float(targets.get("nasdaq", 70)),
         "sp500": float(targets.get("sp500", 30)),
@@ -114,19 +107,12 @@ def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
         "cash": float(targets.get("cash", 0)),
         "qdii": float(targets.get("qdii", 0)),
     }
-
-    for category, value in category_values.items():
-        current_pct = float((value / total_assets_cny * 100).quantize(Decimal("0.01"))) if total_assets_cny > 0 else 0.0
-        target_pct = target_map.get(category, 0.0)
-        category_allocations.append(
-            {
-                "category": category,
-                "label": CATEGORY_LABELS.get(category, category),
-                "current_pct": current_pct,
-                "target_pct": target_pct,
-                "gap_pct": round(target_pct - current_pct, 2),
-            }
-        )
+    category_allocations = build_category_allocations(
+        holdings,
+        target_map,
+        float(total_assets_cny),
+    )
+    account_category_allocations = build_account_category_allocations(targets, holdings)
 
     rebalance_suggestion = None
     asset_allocs = [c for c in category_allocations if c["target_pct"] > 0 or c["current_pct"] > 0]
@@ -149,6 +135,7 @@ def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
         "cny_assets": float(cny_assets),
         "usd_assets": float(usd_assets),
         "category_allocations": category_allocations,
+        "account_category_allocations": account_category_allocations,
         "rebalance_suggestion": rebalance_suggestion,
         "holdings": holdings,
     }
@@ -174,46 +161,52 @@ def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
 
     metrics["xirr"] = xirr_value
     metrics["annualized_return"] = annualized_return
+
+    plans = generate_investment_plans(db, targets, metrics_for_rebalance=False)
+    metrics["phase_investment"] = build_phase_investment_summary(
+        db, targets, plans, date.today(), usd_cny_rate
+    )
+
     return metrics
 
 
+def _net_investment_cny_as_of(db: Session, as_of: date) -> Decimal:
+    transactions = db.query(Transaction).filter(Transaction.trade_date <= as_of).all()
+    buy_total = Decimal("0")
+    sell_total = Decimal("0")
+
+    for tx in transactions:
+        amount = _to_decimal(tx.amount) if tx.amount else _to_decimal(tx.quantity) * _to_decimal(tx.price)
+        fee = _to_decimal(tx.fee)
+        instrument = db.query(Instrument).filter(Instrument.id == tx.instrument_id).one()
+        rate = _to_decimal(tx.exchange_rate)
+        cny_amount = convert_transaction_to_cny(amount, instrument.currency, rate)
+        cny_fee = convert_transaction_to_cny(fee, instrument.currency, rate)
+        if tx.side == "buy":
+            buy_total += cny_amount + cny_fee
+        else:
+            sell_total += cny_amount - cny_fee
+
+    return buy_total - sell_total
+
+
 def build_asset_history(db: Session, usd_cny_rate: float = 7.2) -> list[dict]:
-    snapshots = {}
-    price_rows = (
-        db.query(PriceSnapshot)
-        .order_by(PriceSnapshot.snapshot_date.asc())
-        .all()
-    )
-
-    for row in price_rows:
-        snapshots.setdefault(row.snapshot_date, {})[row.instrument_id] = _to_decimal(row.price)
-
-    if not snapshots:
+    price_index = build_historical_price_index(db)
+    if not price_index:
         return []
 
+    snapshot_dates = sorted({snap_date for series in price_index.values() for snap_date, _ in series})
+    today = date.today()
+    if not snapshot_dates or snapshot_dates[-1] < today:
+        snapshot_dates.append(today)
+
     history = []
-    for snap_date in sorted(snapshots.keys()):
-        holdings = build_holdings(db, usd_cny_rate=usd_cny_rate)
-        total_assets = sum(h["market_value_cny"] for h in holdings)
-
-        transactions = db.query(Transaction).filter(Transaction.trade_date <= snap_date).all()
-        buy_total = Decimal("0")
-        sell_total = Decimal("0")
-
-        for tx in transactions:
-            amount = _to_decimal(tx.amount) if tx.amount else _to_decimal(tx.quantity) * _to_decimal(tx.price)
-            fee = _to_decimal(tx.fee)
-            instrument = db.query(Instrument).filter(Instrument.id == tx.instrument_id).one()
-            rate = _to_decimal(tx.exchange_rate)
-            cny_amount = convert_transaction_to_cny(amount, instrument.currency, rate)
-            cny_fee = convert_transaction_to_cny(fee, instrument.currency, rate)
-            if tx.side == "buy":
-                buy_total += cny_amount + cny_fee
-            else:
-                sell_total += cny_amount - cny_fee
-
-        net_investment = buy_total - sell_total
-        total_return = Decimal(str(total_assets)) + sell_total - buy_total
+    fallback_rate = _to_decimal(usd_cny_rate)
+    for snap_date in snapshot_dates:
+        fx_rate = _to_decimal(get_usd_cny_rate_as_of(db, snap_date, float(fallback_rate)))
+        total_assets = total_assets_cny_as_of(db, snap_date, price_index, fx_rate)
+        net_investment = _net_investment_cny_as_of(db, snap_date)
+        total_return = total_assets - net_investment
         history.append(
             {
                 "date": snap_date,

@@ -5,6 +5,7 @@ from app.database import Base, SessionLocal, engine
 from app.routers import (
     accounts,
     annual_review,
+    backtest,
     dashboard,
     exchange_rates,
     forecast,
@@ -15,9 +16,11 @@ from app.routers import (
     transactions,
 )
 from app.services.config import ensure_default_config, seed_database
+from app.services.plan_phase import ensure_plan_phase_column
 from app.services.sync_job import start_scheduler, stop_scheduler
 
 Base.metadata.create_all(bind=engine)
+ensure_plan_phase_column()
 
 app = FastAPI(title="Wealth Investment OS", version="0.1.0")
 
@@ -37,6 +40,7 @@ app.include_router(investment_plans.router)
 app.include_router(prices.router)
 app.include_router(dashboard.router)
 app.include_router(forecast.router)
+app.include_router(backtest.router)
 app.include_router(annual_review.router)
 app.include_router(sync.router)
 

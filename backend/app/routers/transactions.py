@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -8,6 +8,7 @@ from app.models.models import Account, Instrument, Transaction
 from app.schemas.schemas import TransactionCreate, TransactionOut, TransactionUpdate
 from app.services.config import get_config_map
 from app.services.holdings import compute_instrument_states, convert_transaction_to_cny, _to_decimal
+from app.services.transaction_validation import detect_quantity_price_swap, swap_validation_message
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
@@ -23,6 +24,10 @@ def _normalize_exchange_rate(db: Session, instrument: Instrument, exchange_rate:
         return exchange_rate
     config = get_config_map(db)
     return float(config.get("usd_cny_rate", 7.2))
+
+
+def _normalize_fee(fee: float) -> float:
+    return max(0.0, float(fee))
 
 
 def _enrich(tx: Transaction) -> TransactionOut:
@@ -43,6 +48,7 @@ def _enrich(tx: Transaction) -> TransactionOut:
         fee=float(tx.fee),
         exchange_rate=float(tx.exchange_rate),
         note=tx.note,
+        plan_phase=tx.plan_phase,
         amount_cny=amount_cny,
         currency=currency,
         created_at=tx.created_at,
@@ -67,13 +73,21 @@ def _validate_sell(db: Session, instrument_id: int, quantity: float, exclude_id:
 
 
 @router.get("", response_model=list[TransactionOut])
-def list_transactions(db: Session = Depends(get_db)):
-    rows = (
-        db.query(Transaction)
-        .order_by(Transaction.trade_date.desc(), Transaction.id.desc())
-        .all()
-    )
+def list_transactions(
+    plan_phase: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    query = db.query(Transaction).order_by(Transaction.trade_date.desc(), Transaction.id.desc())
+    if plan_phase in ("building", "dca"):
+        query = query.filter(Transaction.plan_phase == plan_phase)
+    rows = query.all()
     return [_enrich(row) for row in rows]
+
+
+def _validate_qty_price(quantity: float, price: float, currency: str) -> None:
+    suggestion = detect_quantity_price_swap(quantity, price, currency)
+    if suggestion:
+        raise HTTPException(status_code=400, detail=swap_validation_message(suggestion, currency))
 
 
 @router.post("", response_model=TransactionOut)
@@ -85,6 +99,8 @@ def create_transaction(payload: TransactionCreate, db: Session = Depends(get_db)
 
     if payload.side == "sell":
         _validate_sell(db, payload.instrument_id, payload.quantity)
+    else:
+        _validate_qty_price(payload.quantity, payload.price, instrument.currency)
 
     exchange_rate = _normalize_exchange_rate(db, instrument, payload.exchange_rate)
 
@@ -96,9 +112,10 @@ def create_transaction(payload: TransactionCreate, db: Session = Depends(get_db)
         quantity=payload.quantity,
         price=payload.price,
         amount=_calc_amount(payload.quantity, payload.price),
-        fee=payload.fee,
+        fee=_normalize_fee(payload.fee),
         exchange_rate=exchange_rate,
         note=payload.note,
+        plan_phase=payload.plan_phase,
     )
     db.add(tx)
     db.commit()
@@ -115,10 +132,15 @@ def update_transaction(transaction_id: int, payload: TransactionUpdate, db: Sess
     data = payload.model_dump(exclude_unset=True)
     side = data.get("side", tx.side)
     quantity = data.get("quantity", float(tx.quantity))
+    price = data.get("price", float(tx.price))
     instrument_id = data.get("instrument_id", tx.instrument_id)
 
     if side == "sell":
         _validate_sell(db, instrument_id, quantity, exclude_id=transaction_id)
+    else:
+        instrument = db.query(Instrument).filter(Instrument.id == instrument_id).first()
+        if instrument:
+            _validate_qty_price(quantity, price, instrument.currency)
 
     for key, value in data.items():
         setattr(tx, key, value)
@@ -126,6 +148,7 @@ def update_transaction(transaction_id: int, payload: TransactionUpdate, db: Sess
     instrument = db.query(Instrument).filter(Instrument.id == tx.instrument_id).one()
     tx.exchange_rate = _normalize_exchange_rate(db, instrument, float(tx.exchange_rate))
     tx.amount = _calc_amount(float(tx.quantity), float(tx.price))
+    tx.fee = _normalize_fee(float(tx.fee))
     db.commit()
     db.refresh(tx)
     return _enrich(tx)

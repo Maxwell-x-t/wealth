@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.models.models import Account, Instrument
+from app.services.allocation_targets import INDEX_CATEGORIES
 from app.services.holdings import CATEGORY_LABELS, build_holdings
 
 
@@ -95,33 +96,30 @@ def compute_rebalance_detail(db: Session, config: dict, metrics: dict) -> dict:
     )
 
     index_gaps = metrics["category_allocations"]
-    index_candidates = [
-        item for item in index_gaps
-        if item["target_pct"] > 0 or item["current_pct"] > 0
-    ]
-
-    most_under_index = None
-    if index_candidates:
-        most_under_index = min(index_candidates, key=lambda item: item["gap_pct"])
-
-    most_under_account = None
-    if account_gaps:
-        most_under_account = min(account_gaps, key=lambda item: item["gap_pct"])
+    account_index_gaps = metrics.get("account_category_allocations") or {}
 
     codes = resolve_instrument_codes(config)
     recommendations: List[dict] = []
+    summary_parts: List[str] = []
 
-    if most_under_index and most_under_index["gap_pct"] > 0.5:
-        category = most_under_index["category"]
-        account_key = most_under_account["key"] if most_under_account and most_under_account["gap_pct"] > 0.5 else "mainland"
-        account_name = "大陆" if account_key == "mainland" else "香港"
-
-        instrument = None
-        code = None
-        if category in ("nasdaq", "sp500"):
-            code = codes[account_key][category]
-            instrument = find_instrument(db, account_name, code)
-        else:
+    threshold = 0.5
+    for account_name in ("大陆", "香港"):
+        gaps = account_index_gaps.get(account_name, [])
+        index_candidates = [
+            item
+            for item in gaps
+            if item["category"] in INDEX_CATEGORIES
+            and (item["target_pct"] > 0 or item["current_pct"] > 0)
+            and item["gap_pct"] > threshold
+        ]
+        if not index_candidates:
+            continue
+        most_under = min(index_candidates, key=lambda item: item["gap_pct"])
+        account_key = "mainland" if account_name == "大陆" else "hk"
+        category = most_under["category"]
+        code = codes[account_key].get(category)
+        instrument = find_instrument(db, account_name, code) if code else None
+        if not instrument and category not in INDEX_CATEGORIES:
             instrument = (
                 db.query(Instrument)
                 .join(Account)
@@ -132,14 +130,11 @@ def compute_rebalance_detail(db: Session, config: dict, metrics: dict) -> dict:
                 )
                 .first()
             )
-            if not instrument:
-                instrument = (
-                    db.query(Instrument)
-                    .filter(Instrument.category == category, Instrument.is_active.is_(True))
-                    .first()
-                )
             code = instrument.code if instrument else category
+        elif not code:
+            code = category
 
+        reason = f"{account_name} {most_under['label']}偏低 {most_under['gap_pct']:.2f}%"
         recommendations.append(
             {
                 "account": account_name,
@@ -147,15 +142,16 @@ def compute_rebalance_detail(db: Session, config: dict, metrics: dict) -> dict:
                 "label": CATEGORY_LABELS.get(category, category),
                 "code": code,
                 "name": instrument.name if instrument else CATEGORY_LABELS.get(category, category),
-                "reason": f"{most_under_index['label']}低于目标 {most_under_index['gap_pct']:.2f}%",
+                "reason": reason,
             }
         )
+        summary_parts.append(f"{account_name}建议买入{most_under['label']}")
 
-    summary_parts = []
-    if most_under_index and most_under_index["gap_pct"] > 0.5:
-        summary_parts.append(f"建议下一笔买入：{most_under_index['label']}")
-    if most_under_account and most_under_account["gap_pct"] > 0.5:
-        summary_parts.append(f"{most_under_account['label']}账户偏低 {most_under_account['gap_pct']:.2f}%")
+    most_under_account = min(account_gaps, key=lambda item: item["gap_pct"]) if account_gaps else None
+    if most_under_account and most_under_account["gap_pct"] > threshold:
+        summary_parts.append(
+            f"{most_under_account['label']}账户偏低 {most_under_account['gap_pct']:.2f}%"
+        )
 
     if recommendations:
         rec = recommendations[0]
@@ -165,5 +161,6 @@ def compute_rebalance_detail(db: Session, config: dict, metrics: dict) -> dict:
         "summary": "；".join(summary_parts) if summary_parts else None,
         "index_gaps": index_gaps,
         "account_gaps": account_gaps,
+        "account_index_gaps": account_index_gaps,
         "recommendations": recommendations,
     }

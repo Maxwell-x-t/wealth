@@ -69,6 +69,7 @@ class Transaction(Base):
     fee: Mapped[float] = mapped_column(Numeric(18, 4), nullable=False, default=0)
     exchange_rate: Mapped[float] = mapped_column(Numeric(18, 6), nullable=False, default=1)
     note: Mapped[Optional[str]] = mapped_column(Text)
+    plan_phase: Mapped[Optional[str]] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     account: Mapped["Account"] = relationship(back_populates="transactions")

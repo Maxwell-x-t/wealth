@@ -22,6 +22,7 @@ class PlanSkipRequest(BaseModel):
     plan_date: date
     account: str
     category: str
+    phase: str
     skipped: bool = True
 
 
@@ -30,6 +31,7 @@ def list_investment_plans(
     start: Optional[date] = None,
     end: Optional[date] = None,
     phase: Optional[str] = None,
+    account: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     display_start = start if start is not None else date.today()
@@ -40,6 +42,8 @@ def list_investment_plans(
     plans = generate_investment_plans(db, config, start=display_start, end=display_end)
     if phase in ("building", "dca"):
         plans = [item for item in plans if item["phase"] == phase]
+    if account in ("大陆", "香港"):
+        plans = [item for item in plans if item["account"] == account]
     return plans
 
 
@@ -52,7 +56,7 @@ def get_investment_plan_overview(db: Session = Depends(get_db)):
 
 @router.post("/skip", response_model=InvestmentPlanItem)
 def skip_investment_plan(payload: PlanSkipRequest, db: Session = Depends(get_db)):
-    set_plan_skip(db, payload.plan_date, payload.account, payload.category, payload.skipped)
+    set_plan_skip(db, payload.plan_date, payload.account, payload.category, payload.phase, payload.skipped)
     config = get_config_map(db)
     config["usd_cny_rate"] = get_latest_usd_cny_rate(db)
     plans = generate_investment_plans(
@@ -66,6 +70,7 @@ def skip_investment_plan(payload: PlanSkipRequest, db: Session = Depends(get_db)
             item["plan_date"] == payload.plan_date
             and item["account"] == payload.account
             and item["category"] == payload.category
+            and item["phase"] == payload.phase
         ):
             return item
     # 若当日无该计划，返回最小结构

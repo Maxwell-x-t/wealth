@@ -25,6 +25,19 @@ def get_latest_usd_cny_rate(db: Session) -> float:
     return float(config.get("usd_cny_rate", 7.2))
 
 
+def get_usd_cny_rate_as_of(db: Session, as_of: date, fallback: float = 7.2) -> float:
+    latest = (
+        db.query(FxRateSnapshot)
+        .filter(FxRateSnapshot.pair == PAIR_USD_CNY, FxRateSnapshot.snapshot_date <= as_of)
+        .order_by(FxRateSnapshot.snapshot_date.desc(), FxRateSnapshot.id.desc())
+        .first()
+    )
+    if latest:
+        return float(latest.rate)
+    config = get_config_map(db)
+    return float(config.get("usd_cny_rate", fallback))
+
+
 def list_fx_rates(db: Session, limit: int = 30) -> list[FxRateSnapshot]:
     return (
         db.query(FxRateSnapshot)

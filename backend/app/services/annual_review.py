@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.models.models import AppConfig
 from app.services.config import get_config_map, save_config
+from app.services.dca_drawdown import compute_drawdown_boost
 from app.services.fx_rate import get_latest_usd_cny_rate
-from app.services.investment_plan import build_plan_overview
+from app.services.investment_plan import _compute_dca_category_weights, _is_truthy_config, build_plan_overview
 from app.services.returns import compute_dashboard_metrics
 
 CHECKLIST_TEMPLATE = (
@@ -67,7 +68,24 @@ def _build_hints(db: Session, config: dict) -> List[dict]:
             }
         )
 
+    account_index_gaps = metrics.get("account_category_allocations") or {}
+    for account_name, allocations in account_index_gaps.items():
+        for item in allocations:
+            if item.get("category") not in ("nasdaq", "sp500"):
+                continue
+            gap = abs(float(item.get("gap_pct") or 0))
+            if gap >= 5:
+                hints.append(
+                    {
+                        "key": "rebalance",
+                        "level": "warning",
+                        "text": f"{account_name} {item.get('label')} 偏离目标 {item.get('gap_pct')} 个百分点",
+                    }
+                )
+
     for item in metrics.get("category_allocations") or []:
+        if item.get("category") in ("nasdaq", "sp500"):
+            continue
         gap = abs(float(item.get("gap_pct") or 0))
         if gap >= 5:
             hints.append(
@@ -81,6 +99,37 @@ def _build_hints(db: Session, config: dict) -> List[dict]:
     suggestion = metrics.get("rebalance_suggestion")
     if suggestion:
         hints.append({"key": "rebalance", "level": "info", "text": suggestion})
+
+    if _is_truthy_config(config.get("plan_rebalance_enabled", "1")):
+        _, _, tilt_active, tilt_note = _compute_dca_category_weights(
+            config,
+            metrics.get("category_allocations") or [],
+        )
+        if tilt_active and tilt_note:
+            hints.append({"key": "rebalance", "level": "warning", "text": tilt_note})
+        else:
+            hints.append(
+                {
+                    "key": "rebalance",
+                    "level": "success",
+                    "text": "指数仓位偏离均在阈值内，定投按目标比例分配",
+                }
+            )
+
+    boost = compute_drawdown_boost(db, config)
+    if boost.get("enabled"):
+        if boost.get("applied_amount", 0) > 0 and boost.get("note"):
+            hints.append({"key": "dca_done", "level": "warning", "text": boost["note"]})
+        elif boost.get("tier") and boost.get("note"):
+            hints.append({"key": "dca_done", "level": "info", "text": boost["note"]})
+        elif boost.get("max_drawdown_pct", 0) > 0:
+            hints.append(
+                {
+                    "key": "dca_done",
+                    "level": "info",
+                    "text": f"当前最大指数回撤 {boost['max_drawdown_pct']:.1f}%，未触发跌幅加仓",
+                }
+            )
 
     return hints
 

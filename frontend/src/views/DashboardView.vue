@@ -118,6 +118,23 @@ const allocationChartOption = computed(() => {
   }
 })
 
+const accountIndexSections = computed(() => {
+  const allocations = summary.value?.account_category_allocations
+  if (!allocations) return []
+  return Object.entries(allocations)
+    .map(([account, items]) => ({
+      account,
+      items: items.filter(
+        (item) =>
+          item.category === 'nasdaq'
+          || item.category === 'sp500'
+          || item.target_pct > 0
+          || item.current_pct > 0,
+      ),
+    }))
+    .filter((section) => section.items.length > 0)
+})
+
 const accountChartOption = computed(() => {
   if (!summary.value) return null
   return {
@@ -195,6 +212,27 @@ const accountChartOption = computed(() => {
         </div>
       </div>
 
+      <div class="metric-grid">
+        <div class="metric-card">
+          <div class="metric-label">建仓投入</div>
+          <div class="metric-value" style="font-size: 18px">
+            {{ formatMoney(summary.phase_investment?.building_invested_cny) }}
+          </div>
+          <div class="metric-sub">
+            计划匹配 {{ formatMoney(summary.phase_investment?.building_matched_cny) }}
+          </div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">定投投入</div>
+          <div class="metric-value" style="font-size: 18px">
+            {{ formatMoney(summary.phase_investment?.dca_invested_cny) }}
+          </div>
+          <div class="metric-sub">
+            计划匹配 {{ formatMoney(summary.phase_investment?.dca_matched_cny) }}
+          </div>
+        </div>
+      </div>
+
       <NAlert
         v-if="summary.rebalance_suggestion"
         type="info"
@@ -233,6 +271,33 @@ const accountChartOption = computed(() => {
         </div>
       </div>
 
+      <div v-if="accountIndexSections.length" class="panel-grid" style="margin-bottom: 16px">
+        <div
+          v-for="section in accountIndexSections"
+          :key="section.account"
+          class="panel"
+        >
+          <h3>{{ section.account }} · 指数配比</h3>
+          <div class="allocation-list">
+            <div
+              v-for="item in section.items"
+              :key="`${section.account}-${item.category}`"
+              class="allocation-item"
+            >
+              <div class="allocation-head">
+                <span>{{ item.label }}</span>
+                <span>{{ formatPercent(item.current_pct) }} / 目标 {{ formatPercent(item.target_pct) }}</span>
+              </div>
+              <div class="allocation-gap">
+                <NTag :type="item.gap_pct > 0 ? 'warning' : 'success'" size="small">
+                  偏差 {{ formatPercent(item.gap_pct) }}
+                </NTag>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="panel-grid" style="margin-bottom: 16px">
         <div class="panel">
           <h3>资产增长曲线</h3>
@@ -248,7 +313,7 @@ const accountChartOption = computed(() => {
 
       <div class="panel-grid" style="margin-bottom: 16px">
         <div class="panel">
-          <h3>目标比例对比</h3>
+          <h3>全仓目标比例</h3>
           <div class="allocation-list">
             <div
               v-for="item in summary.category_allocations"

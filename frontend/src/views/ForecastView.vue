@@ -86,7 +86,7 @@ async function loadForecast() {
       params.mc_volatility = form.mcVolatility
       params.mc_paths = form.mcPaths
     }
-    const [forecastData, riskData] = await Promise.all([
+    const [forecastResult, riskResult] = await Promise.allSettled([
       getWealthForecast(params),
       getRiskSimulation({
         years: form.years,
@@ -94,8 +94,18 @@ async function loadForecast() {
         drawdowns: '30,40,50',
       }),
     ])
-    forecast.value = forecastData
-    risk.value = riskData
+    if (forecastResult.status === 'fulfilled') {
+      forecast.value = forecastResult.value
+    } else {
+      forecast.value = null
+      console.error('财富预测加载失败', forecastResult.reason)
+    }
+    if (riskResult.status === 'fulfilled') {
+      risk.value = riskResult.value
+    } else {
+      risk.value = null
+      console.error('风险模拟加载失败', riskResult.reason)
+    }
   } finally {
     loading.value = false
   }
@@ -238,6 +248,25 @@ const summaryColumns = computed(() => {
     },
   ]
 })
+
+const contributionColumns = [
+  { title: '年份', key: 'year', width: 80 },
+  {
+    title: '合计',
+    key: 'amount_cny',
+    render: (row) => formatMoney(row.amount_cny),
+  },
+  {
+    title: '建仓',
+    key: 'building_cny',
+    render: (row) => formatMoney(row.building_cny),
+  },
+  {
+    title: '定投',
+    key: 'dca_cny',
+    render: (row) => formatMoney(row.dca_cny),
+  },
+]
 
 const riskColumns = [
   { title: '情景', key: 'label', width: 140 },
@@ -408,7 +437,17 @@ const riskChartOption = computed(() => {
           <span v-if="form.useInflation" class="badge">实际购买力</span>
           <span v-if="form.useMonteCarlo" class="badge">蒙特卡洛</span>
         </h3>
-        <VChart v-if="chartOption" :option="chartOption" style="height: 360px" />
+        <VChart v-if="chartOption" :option="chartOption" autoresize style="height: 360px" />
+      </div>
+
+      <div v-if="forecast.contribution_by_year?.length" class="panel" style="margin-bottom: 16px">
+        <h3>未来年度投入（建仓 / 定投）</h3>
+        <NDataTable
+          :columns="contributionColumns"
+          :data="forecast.contribution_by_year"
+          :bordered="false"
+          size="small"
+        />
       </div>
 
       <div class="panel" style="margin-bottom: 16px">
@@ -453,7 +492,7 @@ const riskChartOption = computed(() => {
           假设当前资产立刻下跌，之后按中性年化 {{ risk.recovery_return_pct }}% 继续定投（年投入约
           {{ formatMoney(risk.annual_contribution_cny) }}）。恢复年限指回到崩盘前资产所需时间。
         </p>
-        <VChart v-if="riskChartOption" :option="riskChartOption" style="height: 300px; margin-bottom: 16px" />
+        <VChart v-if="riskChartOption" :option="riskChartOption" autoresize style="height: 300px; margin-bottom: 16px" />
         <h4>自定义跌幅</h4>
         <NDataTable
           :columns="riskColumns"

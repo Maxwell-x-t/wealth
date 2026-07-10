@@ -7,9 +7,32 @@ from app.database import get_db
 from app.schemas.schemas import AllocationTarget, AssetSnapshotPoint, DashboardSummary
 from app.services.fx_rate import get_latest_usd_cny_rate
 from app.services.config import get_config_map, save_config
+from app.services.dca_amount_schedule import ensure_plan_schedule_updates, merge_dca_schedules_on_save
+from app.services.allocation_targets import validate_account_index_targets
 from app.services.returns import build_asset_history, compute_dashboard_metrics
 
 router = APIRouter(tags=["dashboard"])
+
+
+def _optional_date(config: dict, key: str):
+    value = config.get(key)
+    if not value:
+        return None
+    return date.fromisoformat(str(value))
+
+
+def _optional_float(config: dict, key: str):
+    value = config.get(key)
+    if value in (None, ""):
+        return None
+    return float(value)
+
+
+def _optional_int(config: dict, key: str):
+    value = config.get(key)
+    if value in (None, ""):
+        return None
+    return int(float(value))
 
 
 def _config_to_schema(config: dict) -> AllocationTarget:
@@ -28,7 +51,9 @@ def _config_to_schema(config: dict) -> AllocationTarget:
         building_first_month_amount=float(config.get("building_first_month_amount", 100000)),
         building_monthly_amount=float(config.get("building_monthly_amount", 50000)),
         building_months=int(config.get("building_months", 8)),
+        building_target_amount=_optional_float(config, "building_target_amount"),
         dca_monthly_amount=float(config.get("dca_monthly_amount", 10000)),
+        weeks_per_month=int(config.get("weeks_per_month", 4)),
         plan_horizon_years=int(config.get("plan_horizon_years", 20)),
         mainland_nasdaq_code=config.get("mainland_nasdaq_code", "513100"),
         mainland_sp500_code=config.get("mainland_sp500_code", "513500"),
@@ -43,14 +68,78 @@ def _config_to_schema(config: dict) -> AllocationTarget:
         forecast_mc_paths=int(float(config.get("forecast_mc_paths", 500))),
         sync_enabled=str(config.get("sync_enabled", "0")) in ("1", "true", "True"),
         sync_interval_hours=int(float(config.get("sync_interval_hours", 24))),
+        plan_rebalance_enabled=str(config.get("plan_rebalance_enabled", "1")) in ("1", "true", "True"),
+        plan_rebalance_threshold=float(config.get("plan_rebalance_threshold", 5)),
+        dca_boost_enabled=str(config.get("dca_boost_enabled", "1")) in ("1", "true", "True"),
+        dca_boost_20_pct_amount=float(config.get("dca_boost_20_pct_amount", 10000)),
+        dca_boost_30_pct_amount=float(config.get("dca_boost_30_pct_amount", 20000)),
+        dca_boost_40_pct_amount=float(config.get("dca_boost_40_pct_amount", 30000)),
+        dca_boost_monthly_cap=float(config.get("dca_boost_monthly_cap", 30000)),
+        dca_boost_cash_available=float(config.get("dca_boost_cash_available", 0)),
+        dca_boost_lookback_days=int(float(config.get("dca_boost_lookback_days", 365))),
+        hk_whole_share_only=str(config.get("hk_whole_share_only", "1")) in ("1", "true", "True"),
+        hk_share_price_buffer_pct=float(config.get("hk_share_price_buffer_pct", 2)),
+        mainland_nasdaq=_optional_float(config, "mainland_nasdaq"),
+        mainland_sp500=_optional_float(config, "mainland_sp500"),
+        hk_nasdaq=_optional_float(config, "hk_nasdaq"),
+        hk_sp500=_optional_float(config, "hk_sp500"),
     )
+
+
+def _prepare_config(config: dict, db: Session) -> dict:
+    updates = ensure_plan_schedule_updates(config)
+    if updates:
+        save_config(db, updates)
+        config = get_config_map(db)
+    return config
+
+
+DEPRECATED_ACCOUNT_PLAN_KEYS = (
+    "mainland_plan_start_date",
+    "hk_plan_start_date",
+    "mainland_building_first_month_amount",
+    "mainland_building_monthly_amount",
+    "mainland_building_months",
+    "mainland_building_target_amount",
+    "mainland_dca_monthly_amount",
+    "mainland_weeks_per_month",
+    "hk_building_first_month_amount",
+    "hk_building_monthly_amount",
+    "hk_building_months",
+    "hk_building_target_amount",
+    "hk_dca_monthly_amount",
+    "hk_weeks_per_month",
+)
 
 
 def _schema_to_config(payload: AllocationTarget) -> dict:
     data = payload.model_dump()
-    if data.get("plan_start_date"):
-        data["plan_start_date"] = data["plan_start_date"].isoformat()
+    date_fields = ("plan_start_date",)
+    write_only_dates = ("dca_effective_from",)
+    for key in date_fields:
+        value = data.get(key)
+        if value:
+            data[key] = value.isoformat()
+        elif key in data:
+            data[key] = ""
+    for key in write_only_dates:
+        data.pop(key, None)
+    optional_fields = (
+        "building_target_amount",
+        "mainland_nasdaq",
+        "mainland_sp500",
+        "hk_nasdaq",
+        "hk_sp500",
+    )
+    for key in optional_fields:
+        if data.get(key) is None:
+            data[key] = ""
+    for key in DEPRECATED_ACCOUNT_PLAN_KEYS:
+        data[key] = ""
     data["sync_enabled"] = "1" if data.get("sync_enabled") else "0"
+    data["plan_rebalance_enabled"] = "1" if data.get("plan_rebalance_enabled") else "0"
+    data["dca_boost_enabled"] = "1" if data.get("dca_boost_enabled") else "0"
+    data["hk_whole_share_only"] = "1" if data.get("hk_whole_share_only") else "0"
     return data
 
 
@@ -70,6 +159,7 @@ def get_dashboard_history(db: Session = Depends(get_db)):
 @router.get("/api/config", response_model=AllocationTarget)
 def get_config(db: Session = Depends(get_db)):
     config = get_config_map(db)
+    config = _prepare_config(config, db)
     config["usd_cny_rate"] = get_latest_usd_cny_rate(db)
     return _config_to_schema(config)
 
@@ -88,5 +178,13 @@ def update_config(payload: AllocationTarget, db: Session = Depends(get_db)):
     if round(payload.mainland + payload.hk, 2) != 100:
         raise HTTPException(status_code=400, detail="大陆与香港比例之和必须为 100")
 
-    save_config(db, _schema_to_config(payload))
+    validate_account_index_targets(payload.model_dump())
+
+    old_config = get_config_map(db)
+    old_config = _prepare_config(old_config, db)
+    effective_from = payload.dca_effective_from or date.today()
+    data = _schema_to_config(payload)
+    schedule_updates = merge_dca_schedules_on_save(old_config, data, effective_from)
+    data.update(schedule_updates)
+    save_config(db, data)
     return _config_to_schema(get_config_map(db))

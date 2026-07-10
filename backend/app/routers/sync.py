@@ -14,5 +14,6 @@ def sync_status(db: Session = Depends(get_db)):
 
 
 @router.post("/run", response_model=SyncStatus)
-def sync_run():
-    return run_sync_once()
+def sync_run(db: Session = Depends(get_db)):
+    run_sync_once()
+    return get_sync_status(db)

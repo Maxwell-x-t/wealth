@@ -23,7 +23,10 @@ def _estimate_annual_contribution(db: Session, config: dict) -> float:
     today = date.today()
     by_year = _build_contribution_by_year(db, config, today, years=1)
     if by_year:
-        return float(next(iter(by_year.values())))
+        first = next(iter(by_year.values()))
+        if isinstance(first, dict):
+            return float(first.get("total", 0.0))
+        return float(first)
     return _annual_contribution_fallback(config)
 
 

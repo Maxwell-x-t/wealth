@@ -12,6 +12,7 @@ import {
   NModal,
   NSelect,
   NSpace,
+  NSwitch,
   NSpin,
   NTag,
   useMessage,
@@ -27,6 +28,7 @@ import {
   updateTransaction,
 } from '../api/client'
 import { formatMoney, formatNumber } from '../utils/format'
+import { detectQuantityPriceSwap, isSuspiciousTransaction } from '../utils/transactionValidation'
 
 const message = useMessage()
 const route = useRoute()
@@ -38,6 +40,7 @@ const transactions = ref([])
 const accounts = ref([])
 const instruments = ref([])
 const defaultUsdRate = ref(7.2)
+const includeFee = ref(false)
 
 const form = reactive({
   trade_date: Date.now(),
@@ -49,7 +52,28 @@ const form = reactive({
   fee: 0,
   exchange_rate: 1,
   note: '',
+  plan_phase: null,
 })
+
+const phaseFilter = ref(null)
+
+const phaseOptions = [
+  { label: '全部阶段', value: null },
+  { label: '建仓', value: 'building' },
+  { label: '定投', value: 'dca' },
+  { label: '未标记', value: 'unlabeled' },
+]
+
+const planPhaseOptions = [
+  { label: '不标记', value: null },
+  { label: '建仓', value: 'building' },
+  { label: '定投', value: 'dca' },
+]
+
+const phaseLabelMap = {
+  building: '建仓',
+  dca: '定投',
+}
 
 const sideOptions = [
   { label: '买入', value: 'buy' },
@@ -63,17 +87,37 @@ const selectedInstrument = computed(() =>
 const isUsd = computed(() => selectedInstrument.value?.currency === 'USD')
 const currencySymbol = computed(() => (isUsd.value ? 'USD' : 'CNY'))
 
+const swapSuggestion = computed(() => {
+  if (form.side !== 'buy' || !form.quantity || !form.price) {
+    return null
+  }
+  return detectQuantityPriceSwap(form.quantity, form.price, currencySymbol.value)
+})
+
+function applySwapSuggestion() {
+  if (!swapSuggestion.value) return
+  form.quantity = swapSuggestion.value.quantity
+  form.price = swapSuggestion.value.price
+  message.success('已按建议纠正数量与成交价')
+}
+
 async function loadData() {
   loading.value = true
   try {
+    const txParams = {}
+    if (phaseFilter.value === 'building' || phaseFilter.value === 'dca') {
+      txParams.plan_phase = phaseFilter.value
+    }
     const [txRows, accountRows, instrumentRows, config, latestFx] = await Promise.all([
-      getTransactions(),
+      getTransactions(txParams),
       getAccounts(),
       getInstruments(true),
       getConfig(),
       getLatestExchangeRate(),
     ])
-    transactions.value = txRows
+    transactions.value = phaseFilter.value === 'unlabeled'
+      ? txRows.filter((row) => !row.plan_phase)
+      : txRows
     accounts.value = accountRows
     instruments.value = instrumentRows
     defaultUsdRate.value = latestFx?.rate || config.usd_cny_rate || 7.2
@@ -102,7 +146,9 @@ async function applyPlanFromQuery() {
     form.quantity = null
     form.price = null
     form.fee = 0
+    includeFee.value = false
     form.note = route.query.note ? String(route.query.note) : ''
+    form.plan_phase = route.query.phase ? String(route.query.phase) : null
     if (route.query.plan_date) {
       form.trade_date = new Date(String(route.query.plan_date)).getTime()
     }
@@ -134,7 +180,9 @@ async function applyPlanFromQuery() {
   form.quantity = null
   form.price = null
   form.fee = 0
+  includeFee.value = false
   form.note = route.query.note ? String(route.query.note) : ''
+  form.plan_phase = route.query.phase ? String(route.query.phase) : null
   if (route.query.plan_date) {
     form.trade_date = new Date(String(route.query.plan_date)).getTime()
   }
@@ -145,15 +193,31 @@ async function applyPlanFromQuery() {
 
 function applyInstrumentDefaults() {
   if (isUsd.value) {
+    if (!includeFee.value) {
+      form.fee = 0
+    }
     if (!editingId.value || form.exchange_rate <= 1) {
       form.exchange_rate = defaultUsdRate.value
     }
   } else {
+    includeFee.value = false
     form.exchange_rate = 1
   }
 }
 
-watch(() => form.instrument_id, applyInstrumentDefaults)
+watch(() => form.instrument_id, () => {
+  if (isUsd.value) {
+    includeFee.value = false
+    form.fee = 0
+  }
+  applyInstrumentDefaults()
+})
+
+watch(includeFee, (enabled) => {
+  if (!enabled) {
+    form.fee = 0
+  }
+})
 
 function resetForm() {
   editingId.value = null
@@ -164,8 +228,10 @@ function resetForm() {
   form.quantity = null
   form.price = null
   form.fee = 0
+  includeFee.value = false
   form.exchange_rate = 1
   form.note = ''
+  form.plan_phase = null
   applyInstrumentDefaults()
 }
 
@@ -183,12 +249,19 @@ function openEdit(row) {
   form.quantity = row.quantity
   form.price = row.price
   form.fee = row.fee
+  includeFee.value = row.currency === 'USD' && row.fee > 0
   form.exchange_rate = row.exchange_rate
   form.note = row.note || ''
+  form.plan_phase = row.plan_phase || null
   showModal.value = true
 }
 
 async function submitForm() {
+  if (swapSuggestion.value) {
+    message.error('数量与成交价疑似填反，请先纠正后再保存')
+    return
+  }
+
   const payload = {
     trade_date: new Date(form.trade_date).toISOString().slice(0, 10),
     account_id: form.account_id,
@@ -196,9 +269,10 @@ async function submitForm() {
     side: form.side,
     quantity: form.quantity,
     price: form.price,
-    fee: form.fee || 0,
+    fee: isUsd.value ? (includeFee.value ? (form.fee || 0) : 0) : (form.fee || 0),
     exchange_rate: isUsd.value ? form.exchange_rate : 1,
     note: form.note || null,
+    plan_phase: form.side === 'buy' ? form.plan_phase : null,
   }
 
   try {
@@ -232,6 +306,12 @@ const columns = [
   { title: '品种', key: 'instrument_name', width: 120 },
   { title: '代码', key: 'instrument_code', width: 90 },
   {
+    title: '阶段',
+    key: 'plan_phase',
+    width: 70,
+    render: (row) => (row.plan_phase ? phaseLabelMap[row.plan_phase] || row.plan_phase : '-'),
+  },
+  {
     title: '方向',
     key: 'side',
     width: 70,
@@ -250,7 +330,27 @@ const columns = [
   {
     title: '成交价',
     key: 'price',
-    render: (row) => formatMoney(row.price, row.currency),
+    render: (row) => {
+      const suspicious = isSuspiciousTransaction(row)
+      return h(
+        'span',
+        { style: suspicious ? 'color: #e88080; font-weight: 500' : undefined },
+        formatMoney(row.price, row.currency),
+      )
+    },
+  },
+  {
+    title: '异常',
+    key: 'swap_warning',
+    width: 90,
+    render: (row) => {
+      if (!isSuspiciousTransaction(row)) return '-'
+      return h(
+        NTag,
+        { size: 'small', type: 'error' },
+        { default: () => '疑似填反' },
+      )
+    },
   },
   {
     title: '成交金额',
@@ -304,6 +404,12 @@ const columns = [
         <p class="page-desc">按品种原币记账：大陆品种用人民币，香港品种用美元；人民币市值由汇率折算</p>
       </div>
       <NButton type="primary" @click="openCreate">新增交易</NButton>
+      <NSelect
+        v-model:value="phaseFilter"
+        :options="phaseOptions"
+        style="width: 140px"
+        @update:value="loadData"
+      />
     </div>
 
     <div class="panel">
@@ -338,15 +444,40 @@ const columns = [
         <NFormItem label="方向">
           <NSelect v-model:value="form.side" :options="sideOptions" />
         </NFormItem>
+        <NFormItem v-if="form.side === 'buy'" label="投入阶段">
+          <NSelect v-model:value="form.plan_phase" :options="planPhaseOptions" clearable />
+        </NFormItem>
         <NFormItem label="数量">
           <NInputNumber v-model:value="form.quantity" :min="0" style="width: 100%" />
         </NFormItem>
         <NFormItem :label="`成交价 (${currencySymbol})`">
           <NInputNumber v-model:value="form.price" :min="0" style="width: 100%" />
         </NFormItem>
-        <NFormItem :label="`手续费 (${currencySymbol})`">
+        <div v-if="swapSuggestion" class="swap-warning">
+          <div>
+            数量与成交价疑似填反。建议：数量
+            <strong>{{ swapSuggestion.quantity }}</strong>，成交价
+            <strong>{{ formatMoney(swapSuggestion.price, currencySymbol) }}</strong>
+          </div>
+          <NButton size="small" type="warning" style="margin-top: 8px" @click="applySwapSuggestion">
+            一键纠正
+          </NButton>
+        </div>
+        <NFormItem v-if="!isUsd" :label="`手续费 (${currencySymbol})`">
           <NInputNumber v-model:value="form.fee" :min="0" style="width: 100%" />
         </NFormItem>
+        <template v-else>
+          <NFormItem label="手续费">
+            <NSwitch v-model:value="includeFee">
+              <template #checked>填写</template>
+              <template #unchecked>无（默认）</template>
+            </NSwitch>
+          </NFormItem>
+          <NFormItem v-if="includeFee" :label="`手续费 (${currencySymbol})`">
+            <NInputNumber v-model:value="form.fee" :min="0" style="width: 100%" />
+          </NFormItem>
+          <p v-else class="fee-hint">QQQM、VOO 等默认无交易手续费；若有其他费用可打开开关填写。</p>
+        </template>
         <NFormItem v-if="isUsd" label="美元兑人民币">
           <NInputNumber
             v-model:value="form.exchange_rate"
@@ -376,6 +507,7 @@ const columns = [
   justify-content: space-between;
   align-items: flex-start;
   margin-bottom: 16px;
+  gap: 12px;
 }
 
 .header-row .page-title {
@@ -386,5 +518,22 @@ const columns = [
   margin: 0;
   color: #8b98a5;
   font-size: 13px;
+}
+
+.fee-hint {
+  margin: -8px 0 12px 0;
+  color: #8b98a5;
+  font-size: 12px;
+}
+
+.swap-warning {
+  margin: 0 0 16px 120px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: rgba(232, 128, 128, 0.12);
+  border: 1px solid rgba(232, 128, 128, 0.35);
+  color: #e8b4b4;
+  font-size: 13px;
+  line-height: 1.5;
 }
 </style>

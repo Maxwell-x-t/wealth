@@ -17,7 +17,7 @@ export const createInstrument = (data) => client.post('/instruments', data).then
 export const updateInstrument = (id, data) => client.put(`/instruments/${id}`, data).then((r) => r.data)
 export const deleteInstrument = (id) => client.delete(`/instruments/${id}`).then((r) => r.data)
 
-export const getTransactions = () => client.get('/transactions').then((r) => r.data)
+export const getTransactions = (params = {}) => client.get('/transactions', { params }).then((r) => r.data)
 export const createTransaction = (data) => client.post('/transactions', data).then((r) => r.data)
 export const updateTransaction = (id, data) => client.put(`/transactions/${id}`, data).then((r) => r.data)
 export const deleteTransaction = (id) => client.delete(`/transactions/${id}`).then((r) => r.data)
@@ -33,6 +33,9 @@ export const getWealthForecast = (params = {}) =>
   client.get('/forecast', { params }).then((r) => r.data)
 export const getRiskSimulation = (params = {}) =>
   client.get('/forecast/risk', { params }).then((r) => r.data)
+
+export const getHistoricalBacktest = (params = {}) =>
+  client.get('/backtest', { params, timeout: 60000 }).then((r) => r.data)
 
 export const getAnnualReview = (params = {}) =>
   client.get('/annual-review', { params }).then((r) => r.data)

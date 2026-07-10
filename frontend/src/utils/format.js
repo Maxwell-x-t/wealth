@@ -19,3 +19,14 @@ export function formatNumber(value, digits = 2) {
     maximumFractionDigits: digits,
   })
 }
+
+/** 日期选择器时间戳 → 本地 YYYY-MM-DD（避免 toISOString 在 UTC+8 差一天） */
+export function formatLocalDate(value) {
+  if (value === null || value === undefined || value === '') return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}

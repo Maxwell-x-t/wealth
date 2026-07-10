@@ -20,6 +20,7 @@ DEFAULT_CONFIG = {
     "building_monthly_amount": "50000",
     "building_months": "8",
     "dca_monthly_amount": "10000",
+    "weeks_per_month": "4",
     "plan_horizon_years": "20",
     "mainland_nasdaq_code": "513100",
     "mainland_sp500_code": "513500",
@@ -34,6 +35,17 @@ DEFAULT_CONFIG = {
     "forecast_mc_paths": "500",
     "sync_enabled": "0",
     "sync_interval_hours": "24",
+    "plan_rebalance_enabled": "1",
+    "plan_rebalance_threshold": "5",
+    "dca_boost_enabled": "1",
+    "dca_boost_20_pct_amount": "10000",
+    "dca_boost_30_pct_amount": "20000",
+    "dca_boost_40_pct_amount": "30000",
+    "dca_boost_monthly_cap": "30000",
+    "dca_boost_cash_available": "0",
+    "dca_boost_lookback_days": "365",
+    "hk_whole_share_only": "1",
+    "hk_share_price_buffer_pct": "2",
 }
 
 
