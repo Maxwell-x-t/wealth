@@ -19,7 +19,7 @@ from app.services.account_plan import (
 )
 from app.services.dca_schedule_core import dca_amount_for_month
 from app.services.allocation import find_instruments_by_account_category
-from app.services.allocation_targets import INDEX_CATEGORIES, resolve_account_index_targets, resolve_account_index_targets
+from app.services.allocation_targets import INDEX_CATEGORIES, resolve_account_index_targets
 from app.services.config import save_config
 from app.services.holdings import CATEGORY_LABELS, get_latest_prices
 from app.services.plan_phase import build_phase_investment_summary, compute_account_phase_investment, tx_matches_phase
@@ -125,6 +125,14 @@ def _amounts_match(tx_amount: float, plan_amount: float) -> bool:
     if plan_amount <= 0:
         return True
     return abs(tx_amount - plan_amount) / max(plan_amount, 1) <= AMOUNT_TOLERANCE
+
+
+def _is_fulfilled(available: float, needed: float) -> bool:
+    """容差内视为完成：尾差不再顺延到后续计划。"""
+    if needed <= 0:
+        return True
+    min_needed = needed * (1 - AMOUNT_TOLERANCE)
+    return available >= min_needed or _amounts_match(available, needed)
 
 
 def _window_bounds(plan_date: date) -> tuple[date, date]:
@@ -254,15 +262,12 @@ def _consume_for_plan(
 
 
 def _apply_match_result(plan: dict, needed: float, available: float, window_closed: bool) -> float:
-    """根据窗口内可用金额更新计划状态，返回应从交易池扣减的金额。"""
-    min_needed = needed * (1 - AMOUNT_TOLERANCE)
-
-    if available >= min_needed or _amounts_match(available, needed):
-        consumed = min(available, needed)
+    """根据窗口内可用金额更新计划状态，返回记入本计划的匹配金额。"""
+    if needed <= 0 or _is_fulfilled(available, needed):
         plan["status"] = "done"
-        plan["matched_amount_cny"] = round(consumed, 2)
+        plan["matched_amount_cny"] = round(available, 2)
         plan["shortfall_cny"] = 0.0
-        return consumed
+        return round(available, 2)
 
     if available > 0 and window_closed:
         plan["status"] = "partial"
@@ -378,15 +383,15 @@ def _match_dca_group_by_week(
     pending_credit = 0.0
 
     for plan in group:
-        if plan["status"] == "done":
+        if plan["status"] in ("done", "skipped"):
             continue
 
         base_needed = float(plan["base_amount_cny"])
         rollover_in = pending_debit
         gross_needed = base_needed + rollover_in
         credit_applied = min(pending_credit, gross_needed)
-        net_needed = gross_needed - credit_applied
-        pending_credit -= credit_applied
+        net_needed = round(gross_needed - credit_applied, 2)
+        pending_credit = round(pending_credit - credit_applied, 2)
         pending_debit = 0.0
 
         if rollover_in > 0:
@@ -395,12 +400,19 @@ def _match_dca_group_by_week(
                 2,
             )
             plan["rolled_over_count"] = int(plan.get("rolled_over_count", 0)) + 1
-            plan["amount_cny"] = round(base_needed + rollover_in, 2)
         if credit_applied > 0:
+            plan["credit_offset_cny"] = round(credit_applied, 2)
             plan["adjustment_note"] = f"含上期结余抵扣 {round(credit_applied, 2)} 元"
+        if rollover_in > 0 or credit_applied > 0:
+            plan["amount_cny"] = round(max(0.0, net_needed), 2)
+
+        if net_needed <= 0:
+            _apply_match_result(plan, 0.0, 0.0, True)
+            continue
 
         window_start, window_end = _window_bounds(plan["plan_date"])
         consumed = _consume_in_range(txs, tx_remaining, window_start, window_end)
+        fulfilled = _is_fulfilled(consumed, net_needed)
         _apply_match_result(
             plan,
             net_needed,
@@ -408,9 +420,14 @@ def _match_dca_group_by_week(
             _window_closed(plan["plan_date"]),
         )
         if consumed > net_needed:
-            pending_credit += consumed - net_needed
-        elif _window_closed(plan["plan_date"]) and consumed < net_needed:
-            pending_debit = net_needed - consumed
+            pending_credit = round(pending_credit + consumed - net_needed, 2)
+        elif (
+            _window_closed(plan["plan_date"])
+            and consumed < net_needed
+            and not fulfilled
+        ):
+            # 仅明显不足才顺延；容差内完成的尾差不再滚到下一笔
+            pending_debit = round(net_needed - consumed, 2)
 
 
 def _load_hk_group_transactions_usd(
