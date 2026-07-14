@@ -155,7 +155,7 @@ def compute_rebalance_detail(db: Session, config: dict, metrics: dict) -> dict:
 
     if recommendations:
         rec = recommendations[0]
-        summary_parts.append(f"优先品种：{rec['account']} {rec['code']} {rec['name']}")
+        summary_parts.append(f"优先品种：{rec['account']} {rec['label']}")
 
     return {
         "summary": "；".join(summary_parts) if summary_parts else None,

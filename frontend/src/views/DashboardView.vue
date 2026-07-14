@@ -262,10 +262,10 @@ const accountChartOption = computed(() => {
         <div v-if="summary.rebalance.recommendations?.length" class="recommend-list">
           <div
             v-for="item in summary.rebalance.recommendations"
-            :key="`${item.account}-${item.code}`"
+            :key="`${item.account}-${item.category}`"
             class="recommend-item"
           >
-            <strong>{{ item.account }} · {{ item.code }} {{ item.name }}</strong>
+            <strong>{{ item.account }} · {{ item.label }}</strong>
             <span>{{ item.reason }}</span>
           </div>
         </div>
