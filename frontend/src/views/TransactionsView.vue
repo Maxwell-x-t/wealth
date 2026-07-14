@@ -27,7 +27,7 @@ import {
   getTransactions,
   updateTransaction,
 } from '../api/client'
-import { formatMoney, formatNumber } from '../utils/format'
+import { formatMoney, formatNumber, formatPrice } from '../utils/format'
 import { detectQuantityPriceSwap, isSuspiciousTransaction } from '../utils/transactionValidation'
 
 const message = useMessage()
@@ -335,7 +335,7 @@ const columns = [
       return h(
         'span',
         { style: suspicious ? 'color: #e88080; font-weight: 500' : undefined },
-        formatMoney(row.price, row.currency),
+        formatPrice(row.price, row.currency),
       )
     },
   },
@@ -451,13 +451,13 @@ const columns = [
           <NInputNumber v-model:value="form.quantity" :min="0" style="width: 100%" />
         </NFormItem>
         <NFormItem :label="`成交价 (${currencySymbol})`">
-          <NInputNumber v-model:value="form.price" :min="0" style="width: 100%" />
+          <NInputNumber v-model:value="form.price" :min="0" :precision="3" style="width: 100%" />
         </NFormItem>
         <div v-if="swapSuggestion" class="swap-warning">
           <div>
             数量与成交价疑似填反。建议：数量
             <strong>{{ swapSuggestion.quantity }}</strong>，成交价
-            <strong>{{ formatMoney(swapSuggestion.price, currencySymbol) }}</strong>
+            <strong>{{ formatPrice(swapSuggestion.price, currencySymbol) }}</strong>
           </div>
           <NButton size="small" type="warning" style="margin-top: 8px" @click="applySwapSuggestion">
             一键纠正

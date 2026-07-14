@@ -7,6 +7,16 @@ export function formatMoney(value, currency = 'CNY') {
   })}`
 }
 
+/** 单价（成本价/现价/成交价/行情价），固定 3 位小数 */
+export function formatPrice(value, currency = 'CNY') {
+  if (value === null || value === undefined || Number.isNaN(value)) return '-'
+  const prefix = currency === 'USD' || currency === '$' ? '$' : '¥'
+  return `${prefix}${Number(value).toLocaleString('zh-CN', {
+    minimumFractionDigits: 3,
+    maximumFractionDigits: 3,
+  })}`
+}
+
 export function formatPercent(value) {
   if (value === null || value === undefined) return '-'
   return `${Number(value).toFixed(2)}%`

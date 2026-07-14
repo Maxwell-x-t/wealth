@@ -15,7 +15,7 @@ import {
   useMessage,
 } from 'naive-ui'
 import { getInstruments, getPrices, refreshPrices, updatePrice } from '../api/client'
-import { formatNumber } from '../utils/format'
+import { formatNumber, formatPrice } from '../utils/format'
 
 const message = useMessage()
 const loading = ref(true)
@@ -104,7 +104,7 @@ const columns = [
   {
     title: '最新价',
     key: 'price',
-    render: (row) => (row.price == null ? '-' : formatNumber(row.price, 4)),
+    render: (row) => (row.price == null ? '-' : formatPrice(row.price, row.currency)),
   },
   {
     title: '更新日期',
@@ -129,7 +129,7 @@ const refreshColumns = [
   {
     title: '价格',
     key: 'price',
-    render: (row) => (row.price == null ? '-' : formatNumber(row.price, 4)),
+    render: (row) => (row.price == null ? '-' : formatNumber(row.price, 3)),
   },
   { title: '来源', key: 'source', width: 120, render: (row) => row.source || '-' },
   {
@@ -178,7 +178,7 @@ const refreshColumns = [
           />
         </NFormItem>
         <NFormItem label="价格">
-          <NInputNumber v-model:value="form.price" :min="0" style="width: 100%" />
+          <NInputNumber v-model:value="form.price" :min="0" :precision="3" style="width: 100%" />
         </NFormItem>
         <NFormItem label="日期">
           <NDatePicker v-model:value="form.snapshot_date" type="date" style="width: 100%" />

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { NAlert, NDataTable, NSpin, NTag } from 'naive-ui'
 import { getDashboard, getDashboardHistory } from '../api/client'
-import { formatMoney, formatPercent, formatNumber } from '../utils/format'
+import { formatMoney, formatPercent, formatNumber, formatPrice } from '../utils/format'
 
 const loading = ref(true)
 const summary = ref(null)
@@ -32,12 +32,12 @@ const holdingColumns = [
   {
     title: '成本价',
     key: 'avg_cost',
-    render: (row) => formatMoney(row.avg_cost, row.currency),
+    render: (row) => formatPrice(row.avg_cost, row.currency),
   },
   {
     title: '现价',
     key: 'current_price',
-    render: (row) => formatMoney(row.current_price, row.currency),
+    render: (row) => formatPrice(row.current_price, row.currency),
   },
   {
     title: '市值(原币)',

@@ -486,7 +486,7 @@ def _assign_hk_whole_share_status(
     elapsed: bool,
 ) -> None:
     plan["execution_pool_usd"] = round(pool, 2)
-    plan["share_reference_price_usd"] = round(ref_price, 2)
+    plan["share_reference_price_usd"] = round(ref_price, 3)
     plan["share_threshold_usd"] = round(threshold, 2)
     plan["executable_shares"] = int(pool // ref_price) if ref_price > 0 else 0
     plan["whole_share_mode"] = True
@@ -512,7 +512,7 @@ def _assign_hk_whole_share_status(
         if plan["executable_shares"] > 0:
             _append_pool_note(
                 plan,
-                f"可买 {plan['executable_shares']} 股（约 ${round(ref_price, 2)}/股，手动执行）",
+                f"可买 {plan['executable_shares']} 股（约 ${round(ref_price, 3)}/股，手动执行）",
             )
         return
 
@@ -527,7 +527,7 @@ def _assign_hk_whole_share_status(
         if plan["executable_shares"] > 0:
             _append_pool_note(
                 plan,
-                f"可买 {plan['executable_shares']} 股（约 ${round(ref_price, 2)}/股，手动执行）",
+                f"可买 {plan['executable_shares']} 股（约 ${round(ref_price, 3)}/股，手动执行）",
             )
         return
 
