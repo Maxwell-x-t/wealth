@@ -58,12 +58,13 @@ body {
   color: #8b98a5;
 }
 
+/* A股习惯：涨红跌绿 */
 .positive {
-  color: #3ddc97;
+  color: #ff6b6b;
 }
 
 .negative {
-  color: #ff6b6b;
+  color: #3ddc97;
 }
 
 .panel-grid {

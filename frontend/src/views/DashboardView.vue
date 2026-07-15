@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, h, onMounted, ref } from 'vue'
 import { NAlert, NDataTable, NSpin, NTag } from 'naive-ui'
 import { getDashboard, getDashboardHistory } from '../api/client'
 import { formatMoney, formatPercent, formatNumber, formatPrice } from '../utils/format'
@@ -7,6 +7,19 @@ import { formatMoney, formatPercent, formatNumber, formatPrice } from '../utils/
 const loading = ref(true)
 const summary = ref(null)
 const history = ref([])
+
+function signedClass(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return ''
+  return Number(value) >= 0 ? 'positive' : 'negative'
+}
+
+function renderSignedMoney(value, currency) {
+  return h('span', { class: signedClass(value) }, formatMoney(value, currency))
+}
+
+function renderSignedPercent(value) {
+  return h('span', { class: signedClass(value) }, formatPercent(value))
+}
 
 async function loadData() {
   loading.value = true
@@ -52,14 +65,18 @@ const holdingColumns = [
   {
     title: '浮盈(原币)',
     key: 'unrealized_pnl',
-    render: (row) => formatMoney(row.unrealized_pnl, row.currency),
+    render: (row) => renderSignedMoney(row.unrealized_pnl, row.currency),
   },
   {
     title: '浮盈(CNY)',
     key: 'unrealized_pnl_cny',
-    render: (row) => formatMoney(row.unrealized_pnl_cny),
+    render: (row) => renderSignedMoney(row.unrealized_pnl_cny),
   },
-  { title: '收益率', key: 'unrealized_pnl_rate', render: (row) => formatPercent(row.unrealized_pnl_rate) },
+  {
+    title: '收益率',
+    key: 'unrealized_pnl_rate',
+    render: (row) => renderSignedPercent(row.unrealized_pnl_rate),
+  },
   { title: '占比', key: 'weight', render: (row) => formatPercent(row.weight) },
 ]
 
@@ -177,26 +194,36 @@ const accountChartOption = computed(() => {
         </div>
         <div class="metric-card">
           <div class="metric-label">总收益</div>
-          <div class="metric-value" :class="summary.total_return_cny >= 0 ? 'positive' : 'negative'">
+          <div class="metric-value" :class="signedClass(summary.total_return_cny)">
             {{ formatMoney(summary.total_return_cny) }}
           </div>
-          <div class="metric-sub">收益率 {{ formatPercent(summary.return_rate) }}</div>
+          <div class="metric-sub" :class="signedClass(summary.return_rate)">
+            收益率 {{ formatPercent(summary.return_rate) }}
+          </div>
         </div>
         <div class="metric-card">
           <div class="metric-label">XIRR / 年化</div>
-          <div class="metric-value">{{ formatPercent(summary.xirr) }}</div>
-          <div class="metric-sub">年化 {{ formatPercent(summary.annualized_return) }}</div>
+          <div class="metric-value" :class="signedClass(summary.xirr)">
+            {{ formatPercent(summary.xirr) }}
+          </div>
+          <div class="metric-sub" :class="signedClass(summary.annualized_return)">
+            年化 {{ formatPercent(summary.annualized_return) }}
+          </div>
         </div>
       </div>
 
       <div class="metric-grid">
         <div class="metric-card">
           <div class="metric-label">已实现收益</div>
-          <div class="metric-value">{{ formatMoney(summary.realized_pnl_cny) }}</div>
+          <div class="metric-value" :class="signedClass(summary.realized_pnl_cny)">
+            {{ formatMoney(summary.realized_pnl_cny) }}
+          </div>
         </div>
         <div class="metric-card">
           <div class="metric-label">未实现收益</div>
-          <div class="metric-value">{{ formatMoney(summary.unrealized_pnl_cny) }}</div>
+          <div class="metric-value" :class="signedClass(summary.unrealized_pnl_cny)">
+            {{ formatMoney(summary.unrealized_pnl_cny) }}
+          </div>
         </div>
         <div class="metric-card">
           <div class="metric-label">大陆 / 香港</div>
