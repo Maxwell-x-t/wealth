@@ -82,14 +82,38 @@ const holdingColumns = [
 
 const assetChartOption = computed(() => {
   if (!history.value.length) return null
+  const points = history.value
   return {
     backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis' },
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        if (!params?.length) return ''
+        const index = params[0].dataIndex
+        const point = points[index]
+        if (!point) return ''
+        const net = Number(point.net_investment_cny)
+        const assets = Number(point.total_assets_cny)
+        const profit = point.total_return_cny != null
+          ? Number(point.total_return_cny)
+          : assets - net
+        const rate = net > 0 ? (profit / net) * 100 : null
+        const rateColor = rate == null ? '#cbd5e1' : rate >= 0 ? '#ff6b6b' : '#3ddc97'
+        const profitColor = profit >= 0 ? '#ff6b6b' : '#3ddc97'
+        const lines = [
+          point.date,
+          ...params.map((item) => `${item.marker}${item.seriesName}：${formatMoney(item.value)}`),
+          `<span style="color:${profitColor}">累计收益：${formatMoney(profit)}</span>`,
+          `<span style="color:${rateColor}">收益率：${formatPercent(rate)}</span>`,
+        ]
+        return lines.join('<br/>')
+      },
+    },
     legend: { textStyle: { color: '#cbd5e1' } },
     grid: { left: 50, right: 20, top: 40, bottom: 30 },
     xAxis: {
       type: 'category',
-      data: history.value.map((item) => item.date),
+      data: points.map((item) => item.date),
       axisLabel: { color: '#94a3b8' },
     },
     yAxis: {
@@ -101,14 +125,14 @@ const assetChartOption = computed(() => {
         name: '总资产',
         type: 'line',
         smooth: true,
-        data: history.value.map((item) => item.total_assets_cny),
+        data: points.map((item) => item.total_assets_cny),
         color: '#4f8cff',
       },
       {
         name: '净投入',
         type: 'line',
         smooth: true,
-        data: history.value.map((item) => item.net_investment_cny),
+        data: points.map((item) => item.net_investment_cny),
         color: '#94a3b8',
       },
     ],
