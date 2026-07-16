@@ -303,6 +303,20 @@ const buildingProgress = computed(() => {
   return Math.round((overview.value.building_done / overview.value.building_total) * 100)
 })
 
+const maFactors = computed(() =>
+  (overview.value?.dca_ma || []).filter((ma) => Math.abs((ma.factor ?? 1) - 1) > 0.005),
+)
+
+const showStrategyPanel = computed(() => {
+  const o = overview.value
+  if (!o) return false
+  return (
+    o.dca_tilt_active ||
+    (o.dca_boost?.enabled && (o.dca_boost?.note || o.dca_boost?.max_drawdown_pct > 0)) ||
+    maFactors.value.length > 0
+  )
+})
+
 const displaySummaries = computed(() => {
   const rows = overview.value?.account_summaries || []
   if (!accountFilter.value) return rows
@@ -423,7 +437,7 @@ function accountBuildingSub(summary) {
       </div>
 
       <div
-        v-if="overview.dca_boost?.enabled && (overview.dca_boost.note || overview.dca_tilt_active)"
+        v-if="showStrategyPanel"
         class="panel"
         style="margin-bottom: 16px"
       >
@@ -434,8 +448,17 @@ function accountBuildingSub(summary) {
         <div v-if="overview.dca_boost?.note" class="metric-sub">
           {{ overview.dca_boost.note }}
         </div>
-        <div v-else-if="overview.dca_boost?.max_drawdown_pct > 0" class="metric-sub">
+        <div v-else-if="overview.dca_boost?.enabled && overview.dca_boost?.max_drawdown_pct > 0" class="metric-sub">
           当前最大指数回撤 {{ overview.dca_boost.max_drawdown_pct }}%，未触发跌幅加仓
+        </div>
+        <div
+          v-for="ma in maFactors"
+          :key="ma.category"
+          class="metric-sub"
+          style="margin-top: 4px"
+        >
+          {{ ma.category_label }}均线因子 ×{{ ma.factor.toFixed(2) }}（相对均线
+          {{ ma.deviation_pct >= 0 ? '+' : '' }}{{ ma.deviation_pct?.toFixed(1) }}%）
         </div>
       </div>
 

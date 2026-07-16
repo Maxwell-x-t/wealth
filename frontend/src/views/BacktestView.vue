@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, h, onMounted, reactive, ref, watch } from 'vue'
 import {
   NButton,
   NDataTable,
@@ -24,6 +24,7 @@ const form = reactive({
   start: defaultStart.getTime(),
   end: today.getTime(),
   currencyView: null,
+  centerCenters: [0, 5, 8, 10],
 })
 
 const presetOptions = [
@@ -38,6 +39,20 @@ const currencyOptions = [
   { label: '人民币 CNY（大陆）', value: 'CNY' },
   { label: '美元 USD（香港）', value: 'USD' },
 ]
+
+const centerOptions = [
+  { label: '中性区 0%', value: 0 },
+  { label: '中性区 5%', value: 5 },
+  { label: '中性区 8%（默认）', value: 8 },
+  { label: '中性区 10%', value: 10 },
+]
+
+const CENTER_COLORS = {
+  0: '#60a5fa',
+  5: '#f59e0b',
+  8: '#f97316',
+  10: '#a78bfa',
+}
 
 function applyPreset(value) {
   if (!value) return
@@ -122,6 +137,171 @@ const chartOption = computed(() => {
           if (item.value == null) continue
           const cur = item.seriesName.startsWith('CNY') ? 'CNY' : 'USD'
           lines.push(`${item.seriesName}: ${formatMoney(item.value, cur)}`)
+        }
+        return lines.join('<br/>')
+      },
+    },
+    legend: { textStyle: { color: '#cbd5e1' }, top: 0 },
+    grid: { left: 72, right: 24, top: 56, bottom: 32 },
+    xAxis: {
+      type: 'category',
+      data: labels,
+      axisLabel: { color: '#94a3b8', interval: Math.floor(labels.length / 8) },
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: {
+        color: '#94a3b8',
+        formatter: (value) => {
+          if (Math.abs(value) >= 10000) return `${(value / 10000).toFixed(0)}万`
+          return String(value)
+        },
+      },
+      splitLine: { lineStyle: { color: '#1f2937' } },
+    },
+    series,
+  }
+})
+
+const compareCurrency = computed(() => {
+  if (form.currencyView) return form.currencyView
+  const withData = result.value?.currency_summaries?.find((s) => s.total_contributed > 0)
+  return withData?.currency || 'CNY'
+})
+
+const selectedCenterVariants = computed(() => {
+  const all = result.value?.ma_center_comparisons || []
+  const selected = new Set(form.centerCenters.map(Number))
+  return all
+    .filter((item) => selected.has(Number(item.center_pct)))
+    .sort((a, b) => a.center_pct - b.center_pct)
+})
+
+const maCompareTableColumns = computed(() => {
+  const cols = [
+    { title: '指标', key: 'label', width: 100 },
+    { title: '关因子', key: 'base' },
+  ]
+  for (const variant of selectedCenterVariants.value) {
+    const c = Number(variant.center_pct)
+    cols.push({ title: `中性区 ${c}%`, key: `c${c}` })
+  }
+  return cols
+})
+
+const maCompareTableData = computed(() => {
+  const cur = compareCurrency.value
+  const base = summaryByCurrency.value[cur]
+  const variants = selectedCenterVariants.value
+  if (!base || !variants.length) return []
+
+  const rows = [
+    {
+      label: '期末资产',
+      base: formatMoney(base.final_assets, cur),
+      better: (v, b) => v >= b,
+      pick: (s) => s.final_assets,
+      format: (v) => formatMoney(v, cur),
+    },
+    {
+      label: '收益率',
+      base: formatPercent(base.return_rate),
+      better: (v, b) => (v ?? 0) >= (b ?? 0),
+      pick: (s) => s.return_rate,
+      format: (v) => formatPercent(v),
+    },
+    {
+      label: '年化 CAGR',
+      base: formatPercent(base.cagr),
+      better: (v, b) => (v ?? 0) >= (b ?? 0),
+      pick: (s) => s.cagr,
+      format: (v) => formatPercent(v),
+    },
+    {
+      label: '最大回撤',
+      base: `${base.max_drawdown_pct}%`,
+      better: (v, b) => v <= b,
+      pick: (s) => s.max_drawdown_pct,
+      format: (v) => `${v}%`,
+    },
+  ]
+
+  return rows.map((row) => {
+    const out = { label: row.label, base: row.base }
+    for (const variant of variants) {
+      const summary = (variant.currency_summaries || []).find((s) => s.currency === cur)
+      const key = `c${Number(variant.center_pct)}`
+      if (!summary) {
+        out[key] = '—'
+        continue
+      }
+      const value = row.pick(summary)
+      const deltaBetter = row.better(value, row.pick(base))
+      out[key] = row.format(value)
+      out[`${key}_class`] = deltaBetter ? 'positive' : 'negative'
+    }
+    return out
+  })
+})
+
+function renderMaCompareCell(row, key) {
+  const text = row[key]
+  const cls = row[`${key}_class`]
+  if (!cls) return text
+  return h('span', { class: cls }, text)
+}
+
+const maCompareColumnsRendered = computed(() =>
+  maCompareTableColumns.value.map((col) => {
+    if (col.key === 'label' || col.key === 'base') return col
+    return {
+      ...col,
+      render: (row) => renderMaCompareCell(row, col.key),
+    }
+  }),
+)
+
+const comparisonChartOption = computed(() => {
+  const variants = selectedCenterVariants.value
+  if (!result.value?.points?.length || !variants.length) return null
+  const cur = compareCurrency.value
+  const labels = result.value.points.map((p) => p.label)
+  const baseData = result.value.points.map((p) => p.currencies?.[cur]?.assets ?? null)
+  if (!baseData.some((v) => v)) return null
+
+  const series = [
+    {
+      name: '关因子',
+      type: 'line',
+      smooth: true,
+      showSymbol: false,
+      data: baseData,
+      color: '#94a3b8',
+      lineStyle: { width: 2 },
+    },
+  ]
+  for (const variant of variants) {
+    const c = Number(variant.center_pct)
+    series.push({
+      name: `中性区 ${c}%`,
+      type: 'line',
+      smooth: true,
+      showSymbol: false,
+      data: (variant.points || []).map((p) => p.currencies?.[cur]?.assets ?? null),
+      color: CENTER_COLORS[c] || '#f59e0b',
+      lineStyle: { width: c === 8 ? 2.5 : 1.8 },
+    })
+  }
+
+  return {
+    backgroundColor: 'transparent',
+    tooltip: {
+      trigger: 'axis',
+      formatter: (items) => {
+        const lines = [items[0]?.axisValueLabel || items[0]?.axisValue]
+        for (const item of items) {
+          if (item.value == null) continue
+          lines.push(`${item.marker}${item.seriesName}: ${formatMoney(item.value, cur)}`)
         }
         return lines.join('<br/>')
       },
@@ -256,6 +436,15 @@ const displaySummaries = computed(() => {
         <NFormItem label="图表币种">
           <NSelect v-model:value="form.currencyView" :options="currencyOptions" style="width: 160px" />
         </NFormItem>
+        <NFormItem label="中性区对比">
+          <NSelect
+            v-model:value="form.centerCenters"
+            :options="centerOptions"
+            multiple
+            max-tag-count="responsive"
+            style="width: 280px"
+          />
+        </NFormItem>
         <NButton quaternary type="primary" @click="loadBacktest">刷新</NButton>
       </NForm>
       <p class="hint-text">
@@ -296,6 +485,22 @@ const displaySummaries = computed(() => {
       <div class="panel" style="margin-bottom: 16px">
         <h3>资产曲线（按买入币种）</h3>
         <VChart v-if="chartOption" :option="chartOption" autoresize style="height: 380px" />
+      </div>
+
+      <div v-if="comparisonChartOption" class="panel" style="margin-bottom: 16px">
+        <h3>均线因子 · 中性区并排对比（{{ compareCurrency }}）</h3>
+        <p class="hint-text" style="margin-top: 0; margin-bottom: 12px">
+          同一投入节奏下对比「关因子」与不同中性区上移（0/5/8/10%）。偏贵少投、偏便宜从池中补投（预算守恒）；默认配置为 8%。
+        </p>
+        <VChart :option="comparisonChartOption" autoresize style="height: 360px" />
+        <NDataTable
+          v-if="maCompareTableData.length"
+          :columns="maCompareColumnsRendered"
+          :data="maCompareTableData"
+          :bordered="false"
+          size="small"
+          style="margin-top: 16px"
+        />
       </div>
 
       <div class="panel" style="margin-bottom: 16px">
@@ -396,4 +601,5 @@ h3 {
   font-weight: 600;
   margin-bottom: 4px;
 }
+
 </style>

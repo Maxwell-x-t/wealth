@@ -69,6 +69,12 @@ const form = reactive({
   dca_boost_monthly_cap: 30000,
   dca_boost_cash_available: 0,
   dca_boost_lookback_days: 365,
+  dca_ma_enabled: false,
+  dca_ma_window_days: 200,
+  dca_ma_min_factor: 0.7,
+  dca_ma_max_factor: 1.3,
+  dca_ma_band_pct: 20,
+  dca_ma_center_pct: 8,
   hk_whole_share_only: true,
   hk_share_price_buffer_pct: 2,
   hk_nasdaq: null,
@@ -393,6 +399,29 @@ async function handleSyncNow() {
         </NFormItem>
         <p class="hint-text">
           取 20/30/40% 最高档（不叠加），额外金额按账户定投比例分摊，并按低配倾斜分配；需填写可用现金后才会计入计划。
+        </p>
+
+        <NDivider title-placement="left">均线偏离因子（MA200）</NDivider>
+        <NFormItem label="启用均线因子">
+          <NSwitch v-model:value="form.dca_ma_enabled" />
+        </NFormItem>
+        <NFormItem label="均线窗口（交易日）">
+          <NInputNumber v-model:value="form.dca_ma_window_days" :min="20" :max="500" style="width: 100%" />
+        </NFormItem>
+        <NFormItem label="最小因子（偏贵时）">
+          <NInputNumber v-model:value="form.dca_ma_min_factor" :min="0.1" :max="1" :step="0.05" style="width: 100%" />
+        </NFormItem>
+        <NFormItem label="最大因子（偏便宜时）">
+          <NInputNumber v-model:value="form.dca_ma_max_factor" :min="1" :max="3" :step="0.05" style="width: 100%" />
+        </NFormItem>
+        <NFormItem label="满档偏离带宽 %">
+          <NInputNumber v-model:value="form.dca_ma_band_pct" :min="1" :max="100" :step="1" style="width: 100%" />
+        </NFormItem>
+        <NFormItem label="中性区上移 %">
+          <NInputNumber v-model:value="form.dca_ma_center_pct" :min="0" :max="50" :step="1" style="width: 100%" />
+        </NFormItem>
+        <p class="hint-text">
+          用指数月线相对约 {{ Math.round(form.dca_ma_window_days / 21) }} 个月均线的偏离度调整当月定投：偏贵少投（最低 ×{{ form.dca_ma_min_factor }}）、偏便宜多投（最高 ×{{ form.dca_ma_max_factor }}）。中性区上移 {{ form.dca_ma_center_pct }}% 是考虑市场长期多头、价格多数时间在均线上方。回测中少投的钱会入池，等便宜时再补投（预算守恒）；实盘仅对当月生效。
         </p>
 
         <NDivider title-placement="left">计划品种代码</NDivider>

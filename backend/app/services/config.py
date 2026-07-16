@@ -44,6 +44,12 @@ DEFAULT_CONFIG = {
     "dca_boost_monthly_cap": "30000",
     "dca_boost_cash_available": "0",
     "dca_boost_lookback_days": "365",
+    "dca_ma_enabled": "0",
+    "dca_ma_window_days": "200",
+    "dca_ma_min_factor": "0.7",
+    "dca_ma_max_factor": "1.3",
+    "dca_ma_band_pct": "20",
+    "dca_ma_center_pct": "8",
     "hk_whole_share_only": "1",
     "hk_share_price_buffer_pct": "2",
 }

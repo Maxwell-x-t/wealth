@@ -832,6 +832,7 @@ def _generate_account_plans(
     boost_note: Optional[str] = None,
     tilt_note: Optional[str] = None,
     tilt_target_category: Optional[str] = None,
+    ma_factors: Optional[dict] = None,
 ) -> List[dict]:
     account_name = settings["account"]
     plan_start = settings["plan_start"]
@@ -886,23 +887,49 @@ def _generate_account_plans(
                 weekly_base = base_monthly_amount / weekly_divisor
                 weekly_boost = month_boost / weekly_divisor if month_boost > 0 else 0.0
                 show_boost_note = bool(boost_note and week_index == 1 and month_boost > 0)
+                month_ma = ma_factors if (ma_factors and is_current_month) else None
+
+                def _ma_for(category: str) -> Tuple[float, Optional[str]]:
+                    if not month_ma:
+                        return 1.0, None
+                    info = month_ma.get(category) or {}
+                    factor = info.get("factor", 1.0) or 1.0
+                    return factor, info.get("note")
+
                 if rebalance_enabled:
                     active_weights = category_weights if using_rebalance else default_weights
                     for category in INDEX_CATEGORIES:
                         cat_fraction = active_weights.get(category, 0)
                         if cat_fraction <= 0:
                             continue
-                        amount = weekly_amount * cat_fraction
-                        base_amount = weekly_base * default_weights.get(category, 0)
-                        note = None
+                        base_portion = weekly_base * cat_fraction
+                        boost_portion = weekly_boost * cat_fraction
+                        ma_factor, ma_note = _ma_for(category)
+                        ma_active = abs(ma_factor - 1.0) > 1e-6
+                        amount = base_portion * ma_factor + boost_portion
+
+                        note_parts: List[str] = []
                         if using_rebalance:
-                            note = _dca_adjustment_note(
+                            gap_note = _dca_adjustment_note(
                                 category,
                                 gap_by_category.get(category, 0),
                                 rebalance_threshold,
                                 tilt_note=tilt_note,
                                 is_tilt_target=category == tilt_target_category,
                             )
+                            if gap_note:
+                                note_parts.append(gap_note)
+                        if ma_active and ma_note and week_index == 1:
+                            note_parts.append(ma_note)
+                        note = "；".join(note_parts) if note_parts else None
+
+                        if using_rebalance:
+                            base_display = weekly_base * default_weights.get(category, 0)
+                        elif ma_active:
+                            base_display = base_portion
+                        else:
+                            base_display = None
+
                         _append_plan_item(
                             items,
                             plan_day,
@@ -911,9 +938,9 @@ def _generate_account_plans(
                             category,
                             amount,
                             week_index,
-                            base_amount_cny=base_amount if using_rebalance else None,
+                            base_amount_cny=base_display,
                             adjustment_note=note,
-                            dca_boost_cny=weekly_boost * cat_fraction if weekly_boost > 0 else None,
+                            dca_boost_cny=boost_portion if boost_portion > 0 else None,
                             month_boost_cny=month_boost if show_boost_note else None,
                             boost_note=boost_note if show_boost_note else None,
                         )
@@ -921,14 +948,22 @@ def _generate_account_plans(
                     for category, cat_fraction in default_weights.items():
                         if cat_fraction <= 0:
                             continue
+                        base_portion = weekly_base * cat_fraction
+                        boost_portion = weekly_boost * cat_fraction
+                        ma_factor, ma_note = _ma_for(category)
+                        ma_active = abs(ma_factor - 1.0) > 1e-6
+                        amount = base_portion * ma_factor + boost_portion
+                        note = ma_note if (ma_active and week_index == 1) else None
                         _append_plan_item(
                             items,
                             plan_day,
                             phase,
                             account_name,
                             category,
-                            weekly_amount * cat_fraction,
+                            amount,
                             week_index,
+                            base_amount_cny=base_portion if ma_active else None,
+                            adjustment_note=note,
                         )
             else:
                 for category, cat_pct in (("nasdaq", nasdaq_pct), ("sp500", sp500_pct)):
@@ -1010,9 +1045,11 @@ def generate_investment_plans(
                     break
 
     from app.services.dca_drawdown import compute_drawdown_boost
+    from app.services.dca_ma_factor import resolve_current_month_factors
 
     boost_info = compute_drawdown_boost(db, config, date.today())
     today = date.today()
+    ma_factors = resolve_current_month_factors(config, today)
     account_boost_map: dict[str, float] = {}
     unified_settings = account_settings["大陆"]
     month_index = month_index_for_date(unified_settings["plan_start"], today)
@@ -1076,6 +1113,7 @@ def generate_investment_plans(
                 boost_note=boost_info.get("note"),
                 tilt_note=account_tilt_note,
                 tilt_target_category=account_tilt_target,
+                ma_factors=ma_factors,
             )
         )
 
@@ -1207,6 +1245,19 @@ def build_plan_overview(db: Session, config: dict) -> dict:
         )
 
     from app.services.dca_drawdown import compute_drawdown_boost
+    from app.services.dca_ma_factor import resolve_current_month_factors
+
+    ma_factors = resolve_current_month_factors(config, today)
+    dca_ma = [
+        {
+            "category": category,
+            "category_label": _category_label(category),
+            "factor": info.get("factor", 1.0),
+            "deviation_pct": info.get("deviation_pct"),
+            "note": info.get("note"),
+        }
+        for category, info in ma_factors.items()
+    ]
 
     return {
         "upcoming": upcoming,
@@ -1224,5 +1275,6 @@ def build_plan_overview(db: Session, config: dict) -> dict:
         "phase_investment": phase_investment,
         "account_summaries": account_summaries,
         "dca_boost": compute_drawdown_boost(db, config, today),
+        "dca_ma": dca_ma,
         "dca_tilt_active": dca_tilt_active,
     }

@@ -18,8 +18,50 @@ from app.services.index_history import (
     iter_months,
     price_on_month,
 )
+from app.services.dca_ma_factor import (
+    compute_ma_factor,
+    monthly_ma_deviation,
+    resolve_ma_settings,
+    window_months_from_days,
+)
 
 ACCOUNT_CURRENCY = {"大陆": "CNY", "香港": "USD"}
+
+
+def _ma_factor_for(settings: dict, series: Dict[Tuple[int, int], float], year: int, month: int) -> float:
+    if not settings.get("enabled"):
+        return 1.0
+    window_months = window_months_from_days(settings["window_days"])
+    deviation = monthly_ma_deviation(series, year, month, window_months)
+    if deviation is None:
+        return 1.0
+    return compute_ma_factor(deviation, settings)
+
+
+def _apply_reserve(
+    reserve: Dict[Tuple[str, str], float],
+    currency: str,
+    category: str,
+    base_buy: float,
+    factor: float,
+) -> float:
+    """按 MA 因子调整买入额，少投入池、多投从池里取，实现预算守恒。"""
+    key = (currency, category)
+    if factor < 1.0:
+        withhold = base_buy * (1.0 - factor)
+        reserve[key] = reserve.get(key, 0.0) + withhold
+        return base_buy - withhold
+    if factor > 1.0:
+        want_extra = base_buy * (factor - 1.0)
+        pool = reserve.get(key, 0.0)
+        draw = min(want_extra, pool)
+        reserve[key] = pool - draw
+        return base_buy + draw
+    return base_buy
+
+
+def _reserve_cash(reserve: Dict[Tuple[str, str], float], currency: str) -> float:
+    return sum(v for (cur, _), v in reserve.items() if cur == currency)
 
 
 @dataclass
@@ -82,6 +124,8 @@ def build_historical_backtest(
     config: dict,
     start: date,
     end: date,
+    force_ma: Optional[bool] = None,
+    force_center_pct: Optional[float] = None,
 ) -> dict:
     if start > end:
         raise ValueError("开始日期不能晚于结束日期")
@@ -96,6 +140,21 @@ def build_historical_backtest(
     nasdaq_prices = fetch_monthly_closes(NASDAQ_SYMBOL, start, end)
     sp500_prices = fetch_monthly_closes(SP500_SYMBOL, start, end)
 
+    ma_settings = resolve_ma_settings(config)
+    if force_ma is not None:
+        ma_settings["enabled"] = force_ma
+    if force_center_pct is not None:
+        ma_settings["center_pct"] = float(force_center_pct)
+    ma_reserve: Dict[Tuple[str, str], float] = {}
+    nasdaq_ma_series: Dict[Tuple[int, int], float] = {}
+    sp500_ma_series: Dict[Tuple[int, int], float] = {}
+    if ma_settings["enabled"]:
+        window_months = window_months_from_days(ma_settings["window_days"])
+        lead_years = window_months // 12 + 2
+        ma_start = date(start.year - lead_years, 1, 1)
+        nasdaq_ma_series = fetch_monthly_closes(NASDAQ_SYMBOL, ma_start, end)
+        sp500_ma_series = fetch_monthly_closes(SP500_SYMBOL, ma_start, end)
+
     state = BacktestState()
     points: List[dict] = []
     yearly: Dict[int, Dict[str, dict]] = {}
@@ -108,6 +167,9 @@ def build_historical_backtest(
             continue
 
         month_contrib: Dict[str, float] = {"CNY": 0.0, "USD": 0.0}
+
+        factor_n = _ma_factor_for(ma_settings, nasdaq_ma_series, year, month)
+        factor_s = _ma_factor_for(ma_settings, sp500_ma_series, year, month)
 
         for spec in ACCOUNT_SPECS:
             name = spec["name"]
@@ -128,8 +190,8 @@ def build_historical_backtest(
             month_contrib[currency] += amount
 
             ledger = state.ledger(currency)
-            nasdaq_buy = amount * nasdaq_w
-            sp500_buy = amount * sp500_w
+            nasdaq_buy = _apply_reserve(ma_reserve, currency, "nasdaq", amount * nasdaq_w, factor_n)
+            sp500_buy = _apply_reserve(ma_reserve, currency, "sp500", amount * sp500_w, factor_s)
             ledger.nasdaq_shares += nasdaq_buy / nasdaq_px
             ledger.sp500_shares += sp500_buy / sp500_px
             ledger.principal += amount
@@ -145,7 +207,7 @@ def build_historical_backtest(
         point_currencies: Dict[str, dict] = {}
         for currency in ("CNY", "USD"):
             ledger = state.ledger(currency)
-            assets = ledger.value(nasdaq_px, sp500_px)
+            assets = ledger.value(nasdaq_px, sp500_px) + _reserve_cash(ma_reserve, currency)
             state.update_drawdown(currency, assets)
             point_currencies[currency] = {
                 "principal": round(ledger.principal, 2),
@@ -173,15 +235,10 @@ def build_historical_backtest(
     summaries = []
     for currency in ("CNY", "USD"):
         ledger = state.ledger(currency)
-        if ledger.principal <= 0 and points:
-            # 无投入则仍返回空摘要
+        if points:
             last_px_n = points[-1]["nasdaq_price"]
             last_px_s = points[-1]["sp500_price"]
-            final_assets = ledger.value(last_px_n, last_px_s)
-        elif points:
-            last_px_n = points[-1]["nasdaq_price"]
-            last_px_s = points[-1]["sp500_price"]
-            final_assets = ledger.value(last_px_n, last_px_s)
+            final_assets = ledger.value(last_px_n, last_px_s) + _reserve_cash(ma_reserve, currency)
         else:
             final_assets = 0.0
 
@@ -207,6 +264,14 @@ def build_historical_backtest(
         "nasdaq_weight_pct": round(nasdaq_w * 100, 2),
         "sp500_weight_pct": round(sp500_w * 100, 2),
         "strategy": "building_dca",
+        "dca_ma": {
+            "enabled": ma_settings["enabled"],
+            "window_days": ma_settings["window_days"],
+            "min_factor": ma_settings["min_factor"],
+            "max_factor": ma_settings["max_factor"],
+            "band_pct": ma_settings["band_pct"],
+            "center_pct": ma_settings["center_pct"],
+        },
         "currency_summaries": summaries,
         "points": points,
         "yearly_contributions": [

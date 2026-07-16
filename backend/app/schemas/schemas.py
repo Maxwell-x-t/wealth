@@ -161,6 +161,12 @@ class AllocationTarget(BaseModel):
     dca_boost_monthly_cap: float = 30000
     dca_boost_cash_available: float = 0
     dca_boost_lookback_days: int = 365
+    dca_ma_enabled: bool = False
+    dca_ma_window_days: int = 200
+    dca_ma_min_factor: float = 0.7
+    dca_ma_max_factor: float = 1.3
+    dca_ma_band_pct: float = 20
+    dca_ma_center_pct: float = 8
     hk_whole_share_only: bool = True
     hk_share_price_buffer_pct: float = 2
     mainland_plan_start_date: Optional[date] = None
@@ -327,6 +333,14 @@ class DcaBoostStatus(BaseModel):
     note: Optional[str] = None
 
 
+class DcaMaFactor(BaseModel):
+    category: str
+    category_label: str
+    factor: float = 1.0
+    deviation_pct: Optional[float] = None
+    note: Optional[str] = None
+
+
 class PhaseInvestment(BaseModel):
     building_invested_cny: float = 0
     dca_invested_cny: float = 0
@@ -374,6 +388,7 @@ class InvestmentPlanOverview(BaseModel):
     phase_investment: PhaseInvestment = PhaseInvestment()
     account_summaries: List[AccountPlanSummary] = []
     dca_boost: Optional[DcaBoostStatus] = None
+    dca_ma: List[DcaMaFactor] = []
     dca_tilt_active: bool = False
 
 
@@ -598,6 +613,27 @@ class BacktestPlanSettings(BaseModel):
     currency: str
 
 
+class BacktestMaSettings(BaseModel):
+    enabled: bool = False
+    window_days: int = 200
+    min_factor: float = 0.7
+    max_factor: float = 1.3
+    band_pct: float = 20
+    center_pct: float = 8
+
+
+class BacktestMaComparison(BaseModel):
+    settings: Optional[BacktestMaSettings] = None
+    currency_summaries: List[BacktestCurrencySummary] = []
+    points: List[BacktestPoint] = []
+
+
+class BacktestMaCenterVariant(BaseModel):
+    center_pct: float
+    currency_summaries: List[BacktestCurrencySummary] = []
+    points: List[BacktestPoint] = []
+
+
 class HistoricalBacktest(BaseModel):
     start_date: date
     end_date: date
@@ -606,6 +642,9 @@ class HistoricalBacktest(BaseModel):
     nasdaq_weight_pct: float
     sp500_weight_pct: float
     strategy: str
+    dca_ma: Optional[BacktestMaSettings] = None
+    ma_comparison: Optional[BacktestMaComparison] = None
+    ma_center_comparisons: List[BacktestMaCenterVariant] = []
     currency_summaries: List[BacktestCurrencySummary]
     points: List[BacktestPoint]
     yearly_contributions: List[BacktestYearlyContribution]
