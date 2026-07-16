@@ -17,6 +17,14 @@ export function formatPrice(value, currency = 'CNY') {
   })}`
 }
 
+/** ETF 溢价率：正=溢价，负=折价 */
+export function formatPremiumRate(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return null
+  const n = Number(value)
+  const sign = n > 0 ? '+' : ''
+  return `${sign}${n.toFixed(2)}%`
+}
+
 export function formatPercent(value) {
   if (value === null || value === undefined) return '-'
   return `${Number(value).toFixed(2)}%`

@@ -138,8 +138,16 @@ def total_assets_cny_as_of(
 
 
 def get_latest_prices(db: Session) -> dict[int, D]:
+    return {
+        instrument_id: quote["price"]
+        for instrument_id, quote in get_latest_quotes(db).items()
+    }
+
+
+def get_latest_quotes(db: Session) -> dict[int, dict]:
+    """最新行情：price 必有；大陆 ETF 可能带 iopv / premium_rate。"""
     instruments = db.query(Instrument).all()
-    prices: dict[int, D] = {}
+    quotes: dict[int, dict] = {}
 
     for instrument in instruments:
         latest = (
@@ -148,10 +156,19 @@ def get_latest_prices(db: Session) -> dict[int, D]:
             .order_by(PriceSnapshot.snapshot_date.desc(), PriceSnapshot.id.desc())
             .first()
         )
-        if latest:
-            prices[instrument.id] = _to_decimal(latest.price)
+        if not latest:
+            continue
+        quotes[instrument.id] = {
+            "price": _to_decimal(latest.price),
+            "iopv": float(latest.iopv) if getattr(latest, "iopv", None) is not None else None,
+            "premium_rate": (
+                float(latest.premium_rate)
+                if getattr(latest, "premium_rate", None) is not None
+                else None
+            ),
+        }
 
-    return prices
+    return quotes
 
 
 def convert_transaction_to_cny(amount: D, currency: str, exchange_rate: D) -> D:
@@ -187,7 +204,7 @@ def build_holdings(
         .all()
     )
     states = compute_instrument_states(db)
-    latest_prices = get_latest_prices(db)
+    latest_quotes = get_latest_quotes(db)
     usd_rate = _to_decimal(usd_cny_rate)
 
     holdings: list[dict] = []
@@ -199,7 +216,8 @@ def build_holdings(
         if state.quantity <= 0 and state.realized_pnl == 0:
             continue
 
-        current_price = latest_prices.get(instrument.id, D("0"))
+        quote = latest_quotes.get(instrument.id) or {}
+        current_price = quote.get("price", D("0"))
         market_value = (state.quantity * current_price).quantize(TWO)
         unrealized = (market_value - state.total_cost).quantize(TWO)
         unrealized_rate = (
@@ -224,6 +242,8 @@ def build_holdings(
                 "avg_cost": float(state.avg_cost),
                 "total_cost": float(state.total_cost),
                 "current_price": float(current_price),
+                "iopv": quote.get("iopv"),
+                "premium_rate": quote.get("premium_rate"),
                 "market_value": float(market_value),
                 "market_value_cny": float(market_value_cny),
                 "unrealized_pnl": float(unrealized),

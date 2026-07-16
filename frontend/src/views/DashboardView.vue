@@ -2,7 +2,7 @@
 import { computed, h, onMounted, ref } from 'vue'
 import { NAlert, NDataTable, NSpin, NTag } from 'naive-ui'
 import { getDashboard, getDashboardHistory } from '../api/client'
-import { formatMoney, formatPercent, formatNumber, formatPrice } from '../utils/format'
+import { formatMoney, formatPercent, formatNumber, formatPrice, formatPremiumRate } from '../utils/format'
 
 const loading = ref(true)
 const summary = ref(null)
@@ -50,7 +50,22 @@ const holdingColumns = [
   {
     title: '现价',
     key: 'current_price',
-    render: (row) => formatPrice(row.current_price, row.currency),
+    render: (row) => {
+      const priceText = formatPrice(row.current_price, row.currency)
+      const premiumText = formatPremiumRate(row.premium_rate)
+      if (!premiumText) return priceText
+      return h('span', {}, [
+        priceText,
+        h(
+          'span',
+          {
+            class: signedClass(row.premium_rate),
+            style: 'margin-left: 6px; font-size: 12px',
+          },
+          premiumText,
+        ),
+      ])
+    },
   },
   {
     title: '市值(原币)',

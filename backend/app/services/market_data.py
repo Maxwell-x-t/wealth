@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Tuple
+from typing import Optional, Tuple
 
 import httpx
 
@@ -11,6 +12,14 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+
+
+@dataclass
+class QuoteResult:
+    price: float
+    snapshot_date: date
+    iopv: Optional[float] = None
+    premium_rate: Optional[float] = None
 
 
 def _cn_market_prefix(code: str) -> str:
@@ -25,9 +34,32 @@ def _cn_secid(code: str) -> str:
     return f"0.{code}"
 
 
-def fetch_cn_price(code: str, timeout: float = 10.0) -> Tuple[float, date]:
-    """拉取大陆 ETF/股票最新价，优先东方财富，失败则新浪。"""
+def _optional_float(value) -> Optional[float]:
+    if value is None or value in ("-", ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:  # NaN
+        return None
+    return number
+
+
+def _premium_from_price_iopv(price: float, iopv: Optional[float]) -> Optional[float]:
+    if iopv is None or iopv <= 0:
+        return None
+    return round((price - iopv) / iopv * 100, 2)
+
+
+def fetch_cn_price(code: str, timeout: float = 10.0) -> QuoteResult:
+    """拉取大陆 ETF/股票最新价；ETF 优先带 IOPV/溢价率。"""
     errors = []
+    try:
+        return _fetch_cn_eastmoney_ulist(code, timeout)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"eastmoney-ulist: {exc}")
+
     try:
         return _fetch_cn_eastmoney(code, timeout)
     except Exception as exc:  # noqa: BLE001
@@ -41,7 +73,43 @@ def fetch_cn_price(code: str, timeout: float = 10.0) -> Tuple[float, date]:
     raise RuntimeError("；".join(errors))
 
 
-def _fetch_cn_eastmoney(code: str, timeout: float) -> Tuple[float, date]:
+def _fetch_cn_eastmoney_ulist(code: str, timeout: float) -> QuoteResult:
+    """东财 ulist：现价 + IOPV(f441)，溢价率 = (现价-IOPV)/IOPV。"""
+    url = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+    params = {
+        "secids": _cn_secid(code),
+        "fields": "f2,f12,f14,f441,f402",
+        "invt": "2",
+        "fltt": "2",
+    }
+    headers = {"User-Agent": USER_AGENT, "Referer": "https://quote.eastmoney.com/"}
+    with httpx.Client(timeout=timeout, headers=headers) as client:
+        response = client.get(url, params=params)
+        response.raise_for_status()
+        payload = response.json()
+
+    rows = ((payload.get("data") or {}).get("diff")) or []
+    if not rows:
+        raise RuntimeError("无行情数据")
+    row = rows[0]
+    price = _optional_float(row.get("f2"))
+    if price is None or price <= 0:
+        raise RuntimeError("无最新价")
+
+    iopv = _optional_float(row.get("f441"))
+    if iopv is not None and iopv <= 0:
+        iopv = None
+    premium = _premium_from_price_iopv(price, iopv)
+    if premium is None:
+        # f402 为折价率（正=折价），取负得到溢价率
+        discount = _optional_float(row.get("f402"))
+        if discount is not None:
+            premium = round(-discount, 2)
+
+    return QuoteResult(price=price, snapshot_date=date.today(), iopv=iopv, premium_rate=premium)
+
+
+def _fetch_cn_eastmoney(code: str, timeout: float) -> QuoteResult:
     url = "https://push2.eastmoney.com/api/qt/stock/get"
     params = {
         "secid": _cn_secid(code),
@@ -66,10 +134,10 @@ def _fetch_cn_eastmoney(code: str, timeout: float) -> Tuple[float, date]:
 
     ts = data.get("f86")
     snapshot = datetime.fromtimestamp(int(ts)).date() if ts else date.today()
-    return price_value, snapshot
+    return QuoteResult(price=price_value, snapshot_date=snapshot)
 
 
-def _fetch_cn_sina(code: str, timeout: float) -> Tuple[float, date]:
+def _fetch_cn_sina(code: str, timeout: float) -> QuoteResult:
     symbol = f"{_cn_market_prefix(code)}{code}"
     url = f"https://hq.sinajs.cn/list={symbol}"
     headers = {"User-Agent": USER_AGENT, "Referer": "https://finance.sina.com.cn"}
@@ -99,10 +167,10 @@ def _fetch_cn_sina(code: str, timeout: float) -> Tuple[float, date]:
             snapshot = datetime.strptime(parts[30], "%Y-%m-%d").date()
         except ValueError:
             pass
-    return price_value, snapshot
+    return QuoteResult(price=price_value, snapshot_date=snapshot)
 
 
-def fetch_us_price(code: str, timeout: float = 10.0) -> Tuple[float, date]:
+def fetch_us_price(code: str, timeout: float = 10.0) -> QuoteResult:
     """拉取美股 ETF 最新价，优先新浪美股，失败则 Yahoo。"""
     errors = []
     try:
@@ -118,7 +186,7 @@ def fetch_us_price(code: str, timeout: float = 10.0) -> Tuple[float, date]:
     raise RuntimeError("；".join(errors))
 
 
-def _fetch_us_sina(code: str, timeout: float) -> Tuple[float, date]:
+def _fetch_us_sina(code: str, timeout: float) -> QuoteResult:
     symbol = f"gb_{code.lower()}"
     url = f"https://hq.sinajs.cn/list={symbol}"
     headers = {"User-Agent": USER_AGENT, "Referer": "https://finance.sina.com.cn"}
@@ -146,10 +214,10 @@ def _fetch_us_sina(code: str, timeout: float) -> Tuple[float, date]:
             snapshot = datetime.strptime(parts[3][:10], "%Y-%m-%d").date()
         except ValueError:
             pass
-    return price_value, snapshot
+    return QuoteResult(price=price_value, snapshot_date=snapshot)
 
 
-def _fetch_us_yahoo(code: str, timeout: float) -> Tuple[float, date]:
+def _fetch_us_yahoo(code: str, timeout: float) -> QuoteResult:
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{code}"
     params = {"interval": "1d", "range": "5d"}
     headers = {"User-Agent": USER_AGENT}
@@ -178,10 +246,10 @@ def _fetch_us_yahoo(code: str, timeout: float) -> Tuple[float, date]:
 
     ts = meta.get("regularMarketTime")
     snapshot = datetime.utcfromtimestamp(int(ts)).date() if ts else date.today()
-    return float(price), snapshot
+    return QuoteResult(price=float(price), snapshot_date=snapshot)
 
 
-def fetch_instrument_price(instrument: Instrument) -> Tuple[float, date]:
+def fetch_instrument_price(instrument: Instrument) -> QuoteResult:
     code = instrument.code.strip()
     currency = (instrument.currency or "CNY").upper()
     upper = code.upper()

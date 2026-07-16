@@ -21,12 +21,14 @@ def refresh_all_prices(db: Session) -> dict:
     for instrument in instruments:
         source = resolve_source_label(instrument)
         try:
-            price, snapshot_date = fetch_instrument_price(instrument)
+            quote = fetch_instrument_price(instrument)
             db.add(
                 PriceSnapshot(
                     instrument_id=instrument.id,
-                    price=price,
-                    snapshot_date=snapshot_date,
+                    price=quote.price,
+                    iopv=quote.iopv,
+                    premium_rate=quote.premium_rate,
+                    snapshot_date=quote.snapshot_date,
                 )
             )
             items.append(
@@ -35,8 +37,10 @@ def refresh_all_prices(db: Session) -> dict:
                     "instrument_code": instrument.code,
                     "instrument_name": instrument.name,
                     "success": True,
-                    "price": round(price, 6),
-                    "snapshot_date": snapshot_date,
+                    "price": round(quote.price, 6),
+                    "iopv": round(quote.iopv, 6) if quote.iopv is not None else None,
+                    "premium_rate": quote.premium_rate,
+                    "snapshot_date": quote.snapshot_date,
                     "currency": instrument.currency,
                     "source": source,
                     "error": None,
@@ -51,6 +55,8 @@ def refresh_all_prices(db: Session) -> dict:
                     "instrument_name": instrument.name,
                     "success": False,
                     "price": None,
+                    "iopv": None,
+                    "premium_rate": None,
                     "snapshot_date": None,
                     "currency": instrument.currency,
                     "source": source,

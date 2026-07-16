@@ -17,10 +17,12 @@ from app.routers import (
 )
 from app.services.config import ensure_default_config, seed_database
 from app.services.plan_phase import ensure_plan_phase_column
+from app.services.price_schema import ensure_price_premium_columns
 from app.services.sync_job import start_scheduler, stop_scheduler
 
 Base.metadata.create_all(bind=engine)
 ensure_plan_phase_column()
+ensure_price_premium_columns()
 
 app = FastAPI(title="Wealth Investment OS", version="0.1.0")
 

@@ -95,6 +95,8 @@ class PriceOut(BaseModel):
     instrument_code: str
     instrument_name: str
     price: Optional[float] = None
+    iopv: Optional[float] = None
+    premium_rate: Optional[float] = None
     snapshot_date: Optional[date] = None
     currency: str
 
@@ -105,6 +107,8 @@ class PriceRefreshItem(BaseModel):
     instrument_name: str
     success: bool
     price: Optional[float] = None
+    iopv: Optional[float] = None
+    premium_rate: Optional[float] = None
     snapshot_date: Optional[date] = None
     currency: str
     source: Optional[str] = None
@@ -233,6 +237,8 @@ class HoldingOut(BaseModel):
     avg_cost: float
     total_cost: float
     current_price: float
+    iopv: Optional[float] = None
+    premium_rate: Optional[float] = None
     market_value: float
     market_value_cny: float
     unrealized_pnl: float

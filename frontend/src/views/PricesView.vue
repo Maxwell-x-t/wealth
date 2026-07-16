@@ -15,7 +15,27 @@ import {
   useMessage,
 } from 'naive-ui'
 import { getInstruments, getPrices, refreshPrices, updatePrice } from '../api/client'
-import { formatNumber, formatPrice } from '../utils/format'
+import { formatNumber, formatPrice, formatPremiumRate } from '../utils/format'
+
+function signedClass(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return ''
+  return Number(value) >= 0 ? 'positive' : 'negative'
+}
+
+function renderPriceWithPremium(price, currency, premiumRate) {
+  if (price == null) return '-'
+  const priceText = formatPrice(price, currency)
+  const premiumText = formatPremiumRate(premiumRate)
+  if (!premiumText) return priceText
+  return h('span', {}, [
+    priceText,
+    h(
+      'span',
+      { class: signedClass(premiumRate), style: 'margin-left: 6px; font-size: 12px' },
+      premiumText,
+    ),
+  ])
+}
 
 const message = useMessage()
 const loading = ref(true)
@@ -104,7 +124,7 @@ const columns = [
   {
     title: '最新价',
     key: 'price',
-    render: (row) => (row.price == null ? '-' : formatPrice(row.price, row.currency)),
+    render: (row) => renderPriceWithPremium(row.price, row.currency, row.premium_rate),
   },
   {
     title: '更新日期',
@@ -129,7 +149,19 @@ const refreshColumns = [
   {
     title: '价格',
     key: 'price',
-    render: (row) => (row.price == null ? '-' : formatNumber(row.price, 3)),
+    render: (row) => {
+      if (row.price == null) return '-'
+      const premiumText = formatPremiumRate(row.premium_rate)
+      if (!premiumText) return formatNumber(row.price, 3)
+      return h('span', {}, [
+        formatNumber(row.price, 3),
+        h(
+          'span',
+          { class: signedClass(row.premium_rate), style: 'margin-left: 6px; font-size: 12px' },
+          premiumText,
+        ),
+      ])
+    },
   },
   { title: '来源', key: 'source', width: 120, render: (row) => row.source || '-' },
   {

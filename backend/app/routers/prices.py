@@ -12,12 +12,23 @@ from app.services.price_refresh import refresh_all_prices
 router = APIRouter(prefix="/api/prices", tags=["prices"])
 
 
+def _snapshot_optional_float(latest: Optional[PriceSnapshot], attr: str) -> Optional[float]:
+    if latest is None:
+        return None
+    value = getattr(latest, attr, None)
+    if value is None:
+        return None
+    return float(value)
+
+
 def _to_price_out(instrument: Instrument, latest: Optional[PriceSnapshot]) -> PriceOut:
     return PriceOut(
         instrument_id=instrument.id,
         instrument_code=instrument.code,
         instrument_name=instrument.name,
         price=float(latest.price) if latest else None,
+        iopv=_snapshot_optional_float(latest, "iopv"),
+        premium_rate=_snapshot_optional_float(latest, "premium_rate"),
         snapshot_date=latest.snapshot_date if latest else None,
         currency=instrument.currency,
     )
@@ -65,6 +76,8 @@ def upsert_price(payload: PriceUpdate, db: Session = Depends(get_db)):
         instrument_code=instrument.code,
         instrument_name=instrument.name,
         price=payload.price,
+        iopv=None,
+        premium_rate=None,
         snapshot_date=snapshot_date,
         currency=instrument.currency,
     )

@@ -82,6 +82,8 @@ class PriceSnapshot(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"), nullable=False)
     price: Mapped[float] = mapped_column(Numeric(18, 6), nullable=False)
+    iopv: Mapped[Optional[float]] = mapped_column(Numeric(18, 6))
+    premium_rate: Mapped[Optional[float]] = mapped_column(Numeric(18, 6))
     snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
