@@ -159,6 +159,7 @@ class AllocationTarget(BaseModel):
     dca_boost_30_pct_amount: float = 20000
     dca_boost_40_pct_amount: float = 30000
     dca_boost_monthly_cap: float = 30000
+    dca_boost_annual_cap_pct: float = 50
     dca_boost_cash_available: float = 0
     dca_boost_lookback_days: int = 365
     dca_ma_enabled: bool = False
@@ -323,6 +324,7 @@ class InvestmentPlanItem(BaseModel):
 
 class DcaBoostStatus(BaseModel):
     enabled: bool = False
+    mode: str = "crisis_and"
     tier: Optional[int] = None
     tier_amount: float = 0
     applied_amount: float = 0
@@ -330,6 +332,14 @@ class DcaBoostStatus(BaseModel):
     max_drawdown_pct: float = 0
     trigger_category: Optional[str] = None
     drawdowns: Dict[str, float] = {}
+    vix_level: Optional[float] = None
+    vix_source: Optional[str] = None
+    multiplier: float = 0
+    annual_cap_pct: float = 50
+    annual_cap_amount: float = 0
+    annual_used_amount: float = 0
+    annual_remaining_amount: float = 0
+    annual_cap_reached: bool = False
     note: Optional[str] = None
 
 
@@ -339,6 +349,96 @@ class DcaMaFactor(BaseModel):
     factor: float = 1.0
     deviation_pct: Optional[float] = None
     note: Optional[str] = None
+
+
+class DcaLiveMarketStatus(BaseModel):
+    open: bool = False
+    session: str = "closed"
+    reason: Optional[str] = None
+    local_time: str
+    timezone: str = "Asia/Shanghai"
+    trading_day: Optional[str] = None
+
+
+class DcaLiveCategorySignal(BaseModel):
+    category: str
+    category_label: str
+    index_symbol: str
+    live_price: Optional[float] = None
+    deviation_pct: Optional[float] = None
+    ma_factor: float = 1.0
+    vix_factor: float = 1.0
+    effective_factor: float = 1.0
+    note: Optional[str] = None
+    error: Optional[str] = None
+
+
+class DcaLiveVixSignal(BaseModel):
+    enabled: bool = True
+    level: Optional[float] = None
+    factor: float = 1.0
+    source: Optional[str] = None
+    error: Optional[str] = None
+
+
+class DcaLiveSuggestion(BaseModel):
+    plan_date: date
+    phase: str
+    category: str
+    category_label: str
+    target_label: Optional[str] = None
+    planned_amount_cny: float
+    suggested_amount_cny: float
+    crisis_extra_cny: float = 0
+    effective_factor: float
+    status: Optional[str] = None
+
+
+class DcaLiveAction(BaseModel):
+    code: str
+    label: str
+    summary: str
+
+
+class DcaLiveNotification(BaseModel):
+    level: str
+    title: str
+    body: str
+
+
+class DcaLiveCrisis(BaseModel):
+    triggered: bool = False
+    drawdown_pct: Optional[float] = None
+    trigger_category: Optional[str] = None
+    multiplier: float = 0
+    extra_amount: float = 0
+    annual_cap_amount: Optional[float] = None
+    annual_used_amount: float = 0
+    annual_remaining_amount: Optional[float] = None
+    annual_cap_reached: bool = False
+    note: Optional[str] = None
+
+
+class DcaLiveSignal(BaseModel):
+    as_of: date
+    market: DcaLiveMarketStatus
+    account: str = "大陆"
+    in_dca_phase: bool = False
+    ma_enabled: bool = False
+    vix: DcaLiveVixSignal
+    crisis: Optional[DcaLiveCrisis] = None
+    categories: List[DcaLiveCategorySignal] = []
+    month_planned_cny: float = 0
+    month_matched_cny: float = 0
+    month_remaining_cny: float = 0
+    pool_cny: float = 0
+    has_today_plan: bool = False
+    today_suggestions: List[DcaLiveSuggestion] = []
+    suggested_total_cny: float = 0
+    avg_effective_factor: float = 1.0
+    action: DcaLiveAction
+    notification: Optional[DcaLiveNotification] = None
+    disclaimer: str = ""
 
 
 class PhaseInvestment(BaseModel):
@@ -634,18 +734,82 @@ class BacktestMaCenterVariant(BaseModel):
     points: List[BacktestPoint] = []
 
 
+class BacktestVixSettings(BaseModel):
+    enabled: bool = False
+    mode: str = "crisis_and"
+    vix_gate: float = 25.0
+    drawdown_gate: float = 20.0
+    lookback_days: int = 365
+    extra_cny: float = 0
+    extra_usd: float = 0
+    annual_cap_pct: float = 50
+    single_max_multiplier: float = 1
+    thresholds: List[float] = [25, 35]
+    multipliers: List[float] = [0.25, 0.4, 0.5, 0.75, 1.0]
+    total_min_factor: float = 0.7
+    total_max_factor: float = 1.4
+
+
+class BacktestVixOn(BaseModel):
+    settings: Optional[BacktestVixSettings] = None
+    currency_summaries: List[BacktestCurrencySummary] = []
+    points: List[BacktestPoint] = []
+
+
 class HistoricalBacktest(BaseModel):
     start_date: date
     end_date: date
+    frequency: str = "weekly"
+    price_cadence: str = "daily"
+    ma_cadence: str = "weekly"
     nasdaq_symbol: str
     sp500_symbol: str
     nasdaq_weight_pct: float
     sp500_weight_pct: float
     strategy: str
     dca_ma: Optional[BacktestMaSettings] = None
+    dca_vix: Optional[BacktestVixSettings] = None
     ma_comparison: Optional[BacktestMaComparison] = None
     ma_center_comparisons: List[BacktestMaCenterVariant] = []
+    vix_on: Optional[BacktestVixOn] = None
     currency_summaries: List[BacktestCurrencySummary]
     points: List[BacktestPoint]
     yearly_contributions: List[BacktestYearlyContribution]
     plan_settings: Dict[str, BacktestPlanSettings]
+
+
+class IndexSymbolStatus(BaseModel):
+    symbol: str
+    points: int = 0
+    latest_month: Optional[str] = None
+    daily_points: int = 0
+    latest_day: Optional[str] = None
+    dense_daily: bool = False
+
+
+class IndexDataStatus(BaseModel):
+    updated_at: Optional[str] = None
+    path: str
+    symbols: List[IndexSymbolStatus] = []
+
+
+class IndexDataRefreshRequest(BaseModel):
+    symbols: List[str]
+    timeout: float = 20.0
+
+
+class IndexDataRefreshItem(BaseModel):
+    symbol: str
+    status: str
+    added: int = 0
+    updated: int = 0
+    latest_month: Optional[str] = None
+    daily_points: int = 0
+    error: Optional[str] = None
+
+
+class IndexDataRefreshResult(BaseModel):
+    success: int = 0
+    failed: int = 0
+    results: List[IndexDataRefreshItem] = []
+    status: IndexDataStatus

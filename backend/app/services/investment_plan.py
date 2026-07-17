@@ -1047,7 +1047,6 @@ def generate_investment_plans(
     from app.services.dca_drawdown import compute_drawdown_boost
     from app.services.dca_ma_factor import resolve_current_month_factors
 
-    boost_info = compute_drawdown_boost(db, config, date.today())
     today = date.today()
     ma_factors = resolve_current_month_factors(config, today)
     account_boost_map: dict[str, float] = {}
@@ -1060,6 +1059,10 @@ def generate_investment_plans(
             today.year,
             today.month,
         )
+
+    boost_info = compute_drawdown_boost(
+        db, config, today, base_amount_cny=total_dca_current_month
+    )
 
     for account_name, settings in account_settings.items():
         if phase_for_month_index(settings, month_index) != "dca":
@@ -1259,6 +1262,15 @@ def build_plan_overview(db: Session, config: dict) -> dict:
         for category, info in ma_factors.items()
     ]
 
+    overview_base = 0.0
+    try:
+        unified = account_settings["大陆"]
+        overview_base = dca_amount_for_month(
+            unified["dca_amount_schedule"], today.year, today.month
+        )
+    except Exception:
+        overview_base = 0.0
+
     return {
         "upcoming": upcoming,
         "overdue_count": len(overdue),
@@ -1274,7 +1286,7 @@ def build_plan_overview(db: Session, config: dict) -> dict:
         "next_item": upcoming[0] if upcoming else None,
         "phase_investment": phase_investment,
         "account_summaries": account_summaries,
-        "dca_boost": compute_drawdown_boost(db, config, today),
+        "dca_boost": compute_drawdown_boost(db, config, today, base_amount_cny=overview_base),
         "dca_ma": dca_ma,
         "dca_tilt_active": dca_tilt_active,
     }

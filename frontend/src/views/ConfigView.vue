@@ -2,6 +2,8 @@
 import { onMounted, reactive, ref } from 'vue'
 import {
   NButton,
+  NCheckbox,
+  NCheckboxGroup,
   NDatePicker,
   NDivider,
   NForm,
@@ -14,13 +16,28 @@ import {
   NSwitch,
   useMessage,
 } from 'naive-ui'
-import { getConfig, getSyncStatus, runSyncNow, updateConfig } from '../api/client'
+import {
+  getConfig,
+  getIndexDataStatus,
+  getSyncStatus,
+  refreshIndexData,
+  runSyncNow,
+  updateConfig,
+} from '../api/client'
 import { formatLocalDate } from '../utils/format'
 
 const message = useMessage()
 const loading = ref(true)
 const syncing = ref(false)
+const refreshingIndex = ref(false)
 const syncStatus = ref(null)
+const indexDataStatus = ref(null)
+const indexSymbols = ref(['^IXIC', '^GSPC', '^VIX'])
+const indexSymbolOptions = [
+  { label: '纳指 (^IXIC)', value: '^IXIC' },
+  { label: '标普 (^GSPC)', value: '^GSPC' },
+  { label: 'VIX (^VIX)', value: '^VIX' },
+]
 const showEffectiveModal = ref(false)
 const pendingPayload = ref(null)
 const dcaEffectiveFrom = ref(Date.now())
@@ -67,6 +84,7 @@ const form = reactive({
   dca_boost_30_pct_amount: 20000,
   dca_boost_40_pct_amount: 30000,
   dca_boost_monthly_cap: 30000,
+  dca_boost_annual_cap_pct: 50,
   dca_boost_cash_available: 0,
   dca_boost_lookback_days: 365,
   dca_ma_enabled: false,
@@ -86,7 +104,7 @@ const form = reactive({
 async function loadData() {
   loading.value = true
   try {
-    const [config, status] = await Promise.all([getConfig(), getSyncStatus()])
+    const [config, status, indexStatus] = await Promise.all([getConfig(), getSyncStatus(), getIndexDataStatus()])
     Object.assign(form, config)
     normalizeAccountIndexTargets('mainland')
     normalizeAccountIndexTargets('hk')
@@ -95,6 +113,7 @@ async function loadData() {
       form.plan_start_date = new Date(config.plan_start_date).getTime()
     }
     syncStatus.value = status
+    indexDataStatus.value = indexStatus
   } finally {
     loading.value = false
   }
@@ -252,6 +271,30 @@ async function handleSyncNow() {
     syncing.value = false
   }
 }
+
+async function handleRefreshIndexData() {
+  if (!indexSymbols.value.length) {
+    message.warning('请至少选择一个指数')
+    return
+  }
+  refreshingIndex.value = true
+  try {
+    const result = await refreshIndexData({ symbols: indexSymbols.value, timeout: 20 })
+    indexDataStatus.value = result.status
+    const ok = result.results.filter((item) => item.status === 'ok').map((item) => item.symbol)
+    const err = result.results.filter((item) => item.status === 'error')
+    if (ok.length) {
+      message.success(`指数数据更新成功：${ok.join(', ')}`)
+    }
+    if (err.length) {
+      message.warning(`部分失败：${err.map((item) => `${item.symbol}(${item.error || '未知错误'})`).join('；')}`)
+    }
+  } catch (error) {
+    message.error(error.response?.data?.detail || '指数数据更新失败')
+  } finally {
+    refreshingIndex.value = false
+  }
+}
 </script>
 
 <template>
@@ -375,21 +418,21 @@ async function handleSyncNow() {
           Trade25 等不可碎股时：香港计划金额逐期入池，达「股价×(1+缓冲)」后标为可买入，建议 floor(池/股价) 股，手动下单。
         </p>
 
-        <NDivider title-placement="left">跌幅加仓</NDivider>
-        <NFormItem label="启用跌幅加仓">
+        <NDivider title-placement="left">危机加仓（VIX ∧ 回撤）</NDivider>
+        <NFormItem label="启用危机加仓">
           <NSwitch v-model:value="form.dca_boost_enabled" />
         </NFormItem>
-        <NFormItem label="20% 档额外（元）">
-          <NInputNumber v-model:value="form.dca_boost_20_pct_amount" :min="0" style="width: 100%" />
-        </NFormItem>
-        <NFormItem label="30% 档额外（元）">
-          <NInputNumber v-model:value="form.dca_boost_30_pct_amount" :min="0" style="width: 100%" />
-        </NFormItem>
-        <NFormItem label="40% 档额外（元）">
-          <NInputNumber v-model:value="form.dca_boost_40_pct_amount" :min="0" style="width: 100%" />
-        </NFormItem>
-        <NFormItem label="40% 档月上限（元）">
+        <NFormItem label="月度上限（元）">
           <NInputNumber v-model:value="form.dca_boost_monthly_cap" :min="0" style="width: 100%" />
+        </NFormItem>
+        <NFormItem label="年度上限（常规定投 %）">
+          <NInputNumber
+            v-model:value="form.dca_boost_annual_cap_pct"
+            :min="0"
+            :max="100"
+            :step="5"
+            style="width: 100%"
+          />
         </NFormItem>
         <NFormItem label="可用现金（元）">
           <NInputNumber v-model:value="form.dca_boost_cash_available" :min="0" style="width: 100%" />
@@ -398,7 +441,10 @@ async function handleSyncNow() {
           <NInputNumber v-model:value="form.dca_boost_lookback_days" :min="30" :max="1095" style="width: 100%" />
         </NFormItem>
         <p class="hint-text">
-          取 20/30/40% 最高档（不叠加），额外金额按账户定投比例分摊，并按低配倾斜分配；需填写可用现金后才会计入计划。
+          需同时满足 VIX≥25 且指数回撤≥20% 才追加预算；额外 = 倍数 × 当次定投（不走 MA 池）。
+          回撤 20/30/40% × VIX 25–35 / ≥35 → ×0.25 / ×0.4 / ×0.5 / ×0.75 / ×0.75 / ×1.0。
+          单次最多 ×1.0；年度额外预算不超过当年常规定投的 {{ form.dca_boost_annual_cap_pct }}%。
+          同时受可用现金与月度上限约束；需填写可用现金后才会计入计划。
         </p>
 
         <NDivider title-placement="left">均线偏离因子（MA200）</NDivider>
@@ -483,6 +529,35 @@ async function handleSyncNow() {
             <NButton type="primary" @click="save">保存配置</NButton>
             <NButton :loading="syncing" @click="handleSyncNow">立即同步行情+汇率</NButton>
           </NSpace>
+        </NFormItem>
+
+        <NDivider title-placement="left">指数数据维护</NDivider>
+        <p class="hint-text" style="margin-top: 0">
+          离线兜底：月线 + 日线。日频优先东财，失败则用 FRED（pandas）/CBOE，并缓存到本地；都失败才退回月线。
+        </p>
+        <NFormItem label="更新标的">
+          <NCheckboxGroup v-model:value="indexSymbols">
+            <NSpace>
+              <NCheckbox
+                v-for="item in indexSymbolOptions"
+                :key="item.value"
+                :value="item.value"
+                :label="item.label"
+              />
+            </NSpace>
+          </NCheckboxGroup>
+        </NFormItem>
+        <div v-if="indexDataStatus" class="sync-status">
+          <div>本地数据更新时间：{{ indexDataStatus.updated_at || '未知' }}</div>
+          <div v-for="item in indexDataStatus.symbols" :key="item.symbol">
+            {{ item.symbol }}：月线 {{ item.points }} 条（{{ item.latest_month || '-' }}）
+            · 日线 {{ item.daily_points || 0 }} 条
+            <span v-if="item.dense_daily">（真日频，最新 {{ item.latest_day || '-' }}）</span>
+            <span v-else>（未缓存日频）</span>
+          </div>
+        </div>
+        <NFormItem>
+          <NButton :loading="refreshingIndex" @click="handleRefreshIndexData">更新离线月线/日线</NButton>
         </NFormItem>
       </NForm>
     </div>

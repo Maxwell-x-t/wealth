@@ -1,5 +1,5 @@
 <script setup>
-import { computed, h, onMounted, ref } from 'vue'
+import { computed, h, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NAlert,
@@ -14,6 +14,7 @@ import {
   useMessage,
 } from 'naive-ui'
 import {
+  getDcaLiveSignal,
   getInvestmentPlanOverview,
   getInvestmentPlans,
   skipInvestmentPlan,
@@ -26,6 +27,8 @@ const message = useMessage()
 const loading = ref(true)
 const overview = ref(null)
 const plans = ref([])
+const liveSignal = ref(null)
+const signalLoading = ref(false)
 const phaseFilter = ref(null)
 const accountFilter = ref(null)
 const actionLoading = ref(false)
@@ -112,7 +115,95 @@ async function loadData() {
   }
 }
 
-onMounted(loadData)
+const SIGNAL_POLL_OPEN_MS = 5 * 60 * 1000
+const SIGNAL_POLL_CLOSED_MS = 15 * 60 * 1000
+let signalPollTimer = null
+let notificationPermissionRequested = false
+
+const sessionLabels = {
+  morning: '上午盘',
+  afternoon: '下午盘',
+  pre_market: '开盘前',
+  lunch_break: '午休',
+  after_hours: '已收盘',
+  closed: '休市',
+}
+
+const actionTagTypes = {
+  execute: 'success',
+  early: 'success',
+  defer: 'warning',
+  neutral: 'default',
+  market_closed: 'default',
+}
+
+function shouldNotify(signal) {
+  if (!signal?.market?.open || !signal?.notification) return false
+  const key = `dca-signal-${signal.as_of}-${signal.notification.level}-${signal.action.code}`
+  const sent = localStorage.getItem(key)
+  return !sent
+}
+
+function markNotified(signal) {
+  const key = `dca-signal-${signal.as_of}-${signal.notification.level}-${signal.action.code}`
+  localStorage.setItem(key, String(Date.now()))
+}
+
+async function maybeBrowserNotify(signal) {
+  if (!signal?.notification || !shouldNotify(signal)) return
+  if (typeof window === 'undefined' || !('Notification' in window)) return
+
+  if (Notification.permission === 'default' && !notificationPermissionRequested) {
+    notificationPermissionRequested = true
+    await Notification.requestPermission()
+  }
+  if (Notification.permission !== 'granted') return
+
+  const { title, body } = signal.notification
+  new Notification(title, { body, tag: `dca-signal-${signal.action.code}` })
+  markNotified(signal)
+}
+
+async function loadLiveSignal() {
+  signalLoading.value = true
+  try {
+    const data = await getDcaLiveSignal()
+    liveSignal.value = data
+    await maybeBrowserNotify(data)
+    scheduleSignalPoll()
+  } catch {
+    liveSignal.value = null
+    scheduleSignalPoll()
+  } finally {
+    signalLoading.value = false
+  }
+}
+
+function scheduleSignalPoll() {
+  clearTimeout(signalPollTimer)
+  const delay = liveSignal.value?.market?.open ? SIGNAL_POLL_OPEN_MS : SIGNAL_POLL_CLOSED_MS
+  signalPollTimer = setTimeout(loadLiveSignal, delay)
+}
+
+const showLiveSignalPanel = computed(() => {
+  if (!liveSignal.value) return false
+  if (accountFilter.value && accountFilter.value !== '大陆') return false
+  return liveSignal.value.in_dca_phase || liveSignal.value.has_today_plan
+})
+
+const liveSessionLabel = computed(() => {
+  const session = liveSignal.value?.market?.session
+  return sessionLabels[session] || session || '—'
+})
+
+async function loadAll() {
+  await Promise.all([loadData(), loadLiveSignal()])
+}
+
+onMounted(loadAll)
+onUnmounted(() => {
+  clearTimeout(signalPollTimer)
+})
 
 function renderAmount(row) {
   const currency = rowCurrency(row)
@@ -152,7 +243,7 @@ function renderAmount(row) {
       h(
         'div',
         { style: 'font-size: 12px; color: #e8b86d' },
-        `本月跌幅加仓 ${formatMoney(row.month_boost_cny, currency)}`,
+        `本月危机加仓 ${formatMoney(row.month_boost_cny, currency)}`,
       ),
     )
   }
@@ -400,6 +491,104 @@ function accountBuildingSub(summary) {
     </div>
 
     <template v-if="overview">
+      <div v-if="showLiveSignalPanel" class="panel live-signal-panel" style="margin-bottom: 16px">
+        <div class="live-signal-head">
+          <div>
+            <div class="panel-title">盘中信号（大陆 ETF）</div>
+            <div class="metric-sub">
+              {{ liveSignal.market.local_time }} · {{ liveSessionLabel }}
+              <span v-if="liveSignal.market.open" class="live-dot">交易中</span>
+            </div>
+          </div>
+          <NSpace>
+            <NTag :type="actionTagTypes[liveSignal.action.code] || 'default'" size="small">
+              {{ liveSignal.action.label }}
+            </NTag>
+            <NButton quaternary size="small" :loading="signalLoading" @click="loadLiveSignal">
+              刷新信号
+            </NButton>
+          </NSpace>
+        </div>
+
+        <p class="live-signal-summary">{{ liveSignal.action.summary }}</p>
+
+        <div class="live-signal-metrics">
+          <div v-for="cat in liveSignal.categories" :key="cat.category" class="live-signal-metric">
+            <div class="metric-label">{{ cat.category_label }}</div>
+            <div class="metric-value-sm">
+              ×{{ cat.effective_factor.toFixed(2) }}
+              <span v-if="cat.deviation_pct != null" class="metric-sub">
+                （{{ cat.deviation_pct >= 0 ? '+' : '' }}{{ cat.deviation_pct.toFixed(1) }}%）
+              </span>
+            </div>
+            <div v-if="cat.live_price != null" class="metric-sub">指数 {{ cat.live_price }}</div>
+            <div v-else-if="cat.error" class="metric-sub error-text">{{ cat.error }}</div>
+          </div>
+          <div class="live-signal-metric">
+            <div class="metric-label">VIX / 危机</div>
+            <div class="metric-value-sm">
+              <template v-if="liveSignal.vix.level != null">
+                {{ liveSignal.vix.level.toFixed(1) }}
+              </template>
+              <template v-else>—</template>
+              <span v-if="liveSignal.crisis?.triggered" class="metric-sub">
+                · ×{{ liveSignal.crisis.multiplier.toFixed(2) }}
+              </span>
+            </div>
+            <div v-if="liveSignal.crisis?.note" class="metric-sub">
+              {{ liveSignal.crisis.note }}
+            </div>
+            <div v-if="liveSignal.crisis?.annual_remaining_amount != null" class="metric-sub">
+              年度剩余额度
+              {{ formatMoney(liveSignal.crisis.annual_remaining_amount, 'CNY') }}
+            </div>
+            <div v-else-if="liveSignal.crisis?.drawdown_pct != null" class="metric-sub">
+              回撤 {{ liveSignal.crisis.drawdown_pct.toFixed(1) }}%，未触发
+            </div>
+            <div v-if="liveSignal.vix.source === 'local_monthly'" class="metric-sub">
+              本地月线兜底
+            </div>
+            <div v-else-if="liveSignal.vix.error" class="metric-sub error-text">
+              {{ liveSignal.vix.error }}
+            </div>
+          </div>
+          <div class="live-signal-metric">
+            <div class="metric-label">本月剩余</div>
+            <div class="metric-value-sm">
+              {{ formatMoney(liveSignal.month_remaining_cny, 'CNY') }}
+            </div>
+            <div class="metric-sub">
+              已投 {{ formatMoney(liveSignal.month_matched_cny, 'CNY') }}
+              / 计划 {{ formatMoney(liveSignal.month_planned_cny, 'CNY') }}
+            </div>
+          </div>
+        </div>
+
+        <div v-if="liveSignal.today_suggestions.length" class="live-suggestions">
+          <div class="metric-label" style="margin-bottom: 8px">今日建议</div>
+          <div
+            v-for="item in liveSignal.today_suggestions"
+            :key="`${item.category}-${item.phase}`"
+            class="live-suggestion-row"
+          >
+            <span>{{ item.target_label || item.category_label }}</span>
+            <span>
+              原计划 {{ formatMoney(item.planned_amount_cny, 'CNY') }}
+              → 建议 {{ formatMoney(item.suggested_amount_cny, 'CNY') }}
+              <template v-if="item.crisis_extra_cny > 0">
+                （含危机 +{{ formatMoney(item.crisis_extra_cny, 'CNY') }}）
+              </template>
+            </span>
+          </div>
+          <div v-if="liveSignal.suggested_total_cny > 0" class="metric-sub" style="margin-top: 8px">
+            合计建议 {{ formatMoney(liveSignal.suggested_total_cny, 'CNY') }}
+            · 综合因子 ×{{ liveSignal.avg_effective_factor.toFixed(2) }}
+          </div>
+        </div>
+
+        <p class="hint-text" style="margin-bottom: 0; margin-top: 12px">{{ liveSignal.disclaimer }}</p>
+      </div>
+
       <div v-if="displaySummaries.length" class="account-summary-grid">
         <div v-for="summary in displaySummaries" :key="summary.account" class="account-summary-card">
           <div class="account-summary-title">{{ summary.account }}</div>
@@ -448,8 +637,17 @@ function accountBuildingSub(summary) {
         <div v-if="overview.dca_boost?.note" class="metric-sub">
           {{ overview.dca_boost.note }}
         </div>
+        <div v-if="overview.dca_boost?.enabled && overview.dca_boost?.annual_cap_amount > 0" class="metric-sub">
+          危机加仓年度额度：
+          已用约 {{ formatMoney(overview.dca_boost.annual_used_amount, 'CNY') }}
+          / 上限 {{ formatMoney(overview.dca_boost.annual_cap_amount, 'CNY') }}
+        </div>
         <div v-else-if="overview.dca_boost?.enabled && overview.dca_boost?.max_drawdown_pct > 0" class="metric-sub">
-          当前最大指数回撤 {{ overview.dca_boost.max_drawdown_pct }}%，未触发跌幅加仓
+          当前最大指数回撤 {{ overview.dca_boost.max_drawdown_pct }}%
+          <template v-if="overview.dca_boost?.vix_level != null">
+            · VIX {{ overview.dca_boost.vix_level }}
+          </template>
+          ，未触发危机加仓
         </div>
         <div
           v-for="ma in maFactors"
@@ -619,6 +817,65 @@ function accountBuildingSub(summary) {
 .account-summary-title {
   font-weight: 600;
   margin-bottom: 10px;
+}
+
+.live-signal-panel {
+  border: 1px solid rgba(79, 140, 255, 0.25);
+}
+
+.live-signal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.live-signal-summary {
+  margin: 0 0 12px;
+  color: #cbd5e1;
+  font-size: 13px;
+}
+
+.live-signal-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.live-signal-metric {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.live-suggestions {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.live-suggestion-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  color: #cbd5e1;
+  margin-bottom: 6px;
+}
+
+.live-dot {
+  margin-left: 8px;
+  color: #4ade80;
+}
+
+.error-text {
+  color: #f87171;
+}
+
+.hint-text {
+  color: #8b98a5;
+  font-size: 12px;
 }
 
 .account-summary-metrics {

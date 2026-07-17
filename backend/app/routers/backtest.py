@@ -19,6 +19,7 @@ MA_CENTER_OPTIONS = (0.0, 5.0, 8.0, 10.0)
 def get_historical_backtest(
     start: date = Query(..., description="回测开始日期（计划起点）"),
     end: Optional[date] = Query(None, description="回测结束日期，默认今天"),
+    frequency: str = Query("weekly", pattern="^(weekly|daily)$", description="回测频率"),
     db: Session = Depends(get_db),
 ):
     end_date = end or date.today()
@@ -27,13 +28,16 @@ def get_historical_backtest(
 
     config = get_config_map(db)
     try:
-        baseline = build_historical_backtest(config, start, end_date, force_ma=False)
+        baseline = build_historical_backtest(
+            config, start, end_date, frequency=frequency, force_ma=False
+        )
         center_variants = []
         for center in MA_CENTER_OPTIONS:
             run = build_historical_backtest(
                 config,
                 start,
                 end_date,
+                frequency=frequency,
                 force_ma=True,
                 force_center_pct=center,
             )
@@ -44,12 +48,22 @@ def get_historical_backtest(
                     "points": run["points"],
                 }
             )
+
+        default_center = 8.0
+        vix_on_run = build_historical_backtest(
+            config,
+            start,
+            end_date,
+            frequency=frequency,
+            force_ma=True,
+            force_center_pct=default_center,
+            force_vix_enabled=True,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    default_center = 8.0
     primary = next(
         (item for item in center_variants if item["center_pct"] == default_center),
         center_variants[0] if center_variants else None,
@@ -68,4 +82,9 @@ def get_historical_backtest(
             "points": primary["points"],
         }
     baseline["ma_center_comparisons"] = center_variants
+    baseline["vix_on"] = {
+        "settings": vix_on_run.get("dca_vix"),
+        "currency_summaries": vix_on_run["currency_summaries"],
+        "points": vix_on_run["points"],
+    }
     return baseline

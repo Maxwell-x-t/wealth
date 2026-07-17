@@ -249,6 +249,40 @@ def _fetch_us_yahoo(code: str, timeout: float) -> QuoteResult:
     return QuoteResult(price=float(price), snapshot_date=snapshot)
 
 
+def fetch_yahoo_index_quote(symbol: str, timeout: float = 10.0) -> QuoteResult:
+    """拉取 Yahoo 指数最新价（如 ^IXIC、^GSPC、^VIX）。"""
+    encoded = symbol.replace("^", "%5E")
+    url = f"https://query2.finance.yahoo.com/v8/finance/chart/{encoded}"
+    params = {"interval": "1d", "range": "5d"}
+    headers = {"User-Agent": USER_AGENT}
+    with httpx.Client(timeout=timeout, headers=headers) as client:
+        response = client.get(url, params=params)
+        response.raise_for_status()
+        payload = response.json()
+
+    result = (payload.get("chart") or {}).get("result") or []
+    if not result:
+        error = (payload.get("chart") or {}).get("error")
+        raise RuntimeError(error.get("description") if error else "无行情数据")
+
+    meta = result[0].get("meta") or {}
+    price = meta.get("regularMarketPrice") or meta.get("previousClose")
+    if price is None:
+        quotes = (result[0].get("indicators") or {}).get("quote") or []
+        closes = (quotes[0] or {}).get("close") if quotes else None
+        if closes:
+            for value in reversed(closes):
+                if value is not None:
+                    price = value
+                    break
+    if price is None:
+        raise RuntimeError("无最新价")
+
+    ts = meta.get("regularMarketTime")
+    snapshot = datetime.utcfromtimestamp(int(ts)).date() if ts else date.today()
+    return QuoteResult(price=float(price), snapshot_date=snapshot)
+
+
 def fetch_instrument_price(instrument: Instrument) -> QuoteResult:
     code = instrument.code.strip()
     currency = (instrument.currency or "CNY").upper()

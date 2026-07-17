@@ -127,7 +127,7 @@ def _build_hints(db: Session, config: dict) -> List[dict]:
                 {
                     "key": "dca_done",
                     "level": "info",
-                    "text": f"当前最大指数回撤 {boost['max_drawdown_pct']:.1f}%，未触发跌幅加仓",
+                    "text": f"当前最大指数回撤 {boost['max_drawdown_pct']:.1f}%，未触发危机加仓",
                 }
             )
 

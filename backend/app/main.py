@@ -7,8 +7,10 @@ from app.routers import (
     annual_review,
     backtest,
     dashboard,
+    dca_signals,
     exchange_rates,
     forecast,
+    index_data,
     instruments,
     investment_plans,
     prices,
@@ -45,6 +47,8 @@ app.include_router(forecast.router)
 app.include_router(backtest.router)
 app.include_router(annual_review.router)
 app.include_router(sync.router)
+app.include_router(index_data.router)
+app.include_router(dca_signals.router)
 
 
 @app.on_event("startup")

@@ -23,6 +23,7 @@ const defaultStart = new Date(2000, 0, 1)
 const form = reactive({
   start: defaultStart.getTime(),
   end: today.getTime(),
+  frequency: 'weekly',
   currencyView: null,
   centerCenters: [0, 5, 8, 10],
 })
@@ -38,6 +39,11 @@ const currencyOptions = [
   { label: '全部币种', value: null },
   { label: '人民币 CNY（大陆）', value: 'CNY' },
   { label: '美元 USD（香港）', value: 'USD' },
+]
+
+const frequencyOptions = [
+  { label: '周频（默认）', value: 'weekly' },
+  { label: '日频', value: 'daily' },
 ]
 
 const centerOptions = [
@@ -70,10 +76,16 @@ async function loadBacktest() {
     result.value = await getHistoricalBacktest({
       start: new Date(form.start).toISOString().slice(0, 10),
       end: new Date(form.end).toISOString().slice(0, 10),
+      frequency: form.frequency,
     })
   } catch (error) {
     result.value = null
-    message.error(error.response?.data?.detail || '回测加载失败')
+    const detail = error.response?.data?.detail
+    if (error.code === 'ECONNABORTED' || String(error.message || '').includes('timeout')) {
+      message.error('回测超时，请缩小区间后重试')
+    } else {
+      message.error(detail || '回测加载失败')
+    }
   } finally {
     loading.value = false
   }
@@ -83,7 +95,7 @@ onMounted(loadBacktest)
 
 let reloadTimer = null
 watch(
-  () => [form.start, form.end],
+  () => [form.start, form.end, form.frequency],
   () => {
     clearTimeout(reloadTimer)
     reloadTimer = setTimeout(loadBacktest, 300)
@@ -96,6 +108,13 @@ const summaryByCurrency = computed(() => {
     map[row.currency] = row
   }
   return map
+})
+
+const chartLabelInterval = computed(() => {
+  const count = result.value?.points?.length || 0
+  if (!count) return 0
+  if (form.frequency === 'daily') return Math.max(1, Math.floor(count / 12))
+  return Math.floor(count / 8)
 })
 
 const chartOption = computed(() => {
@@ -146,7 +165,7 @@ const chartOption = computed(() => {
     xAxis: {
       type: 'category',
       data: labels,
-      axisLabel: { color: '#94a3b8', interval: Math.floor(labels.length / 8) },
+      axisLabel: { color: '#94a3b8', interval: chartLabelInterval.value },
     },
     yAxis: {
       type: 'value',
@@ -311,7 +330,7 @@ const comparisonChartOption = computed(() => {
     xAxis: {
       type: 'category',
       data: labels,
-      axisLabel: { color: '#94a3b8', interval: Math.floor(labels.length / 8) },
+      axisLabel: { color: '#94a3b8', interval: chartLabelInterval.value },
     },
     yAxis: {
       type: 'value',
@@ -326,6 +345,124 @@ const comparisonChartOption = computed(() => {
     },
     series,
   }
+})
+
+const vixBaselineVariant = computed(() => {
+  const all = result.value?.ma_center_comparisons || []
+  return all.find((item) => Number(item.center_pct) === 8) || null
+})
+
+const vixOnRun = computed(() => result.value?.vix_on || null)
+
+const vixComparisonChartOption = computed(() => {
+  const base = vixBaselineVariant.value
+  const vixRun = vixOnRun.value
+  if (!base?.points?.length || !vixRun?.points?.length) return null
+  if (!vixRun?.settings?.enabled) return null
+
+  const cur = compareCurrency.value
+  const labels = result.value.points.map((p) => p.label)
+  const baseData = base.points.map((p) => p.currencies?.[cur]?.assets ?? null)
+  const vixData = vixRun.points.map((p) => p.currencies?.[cur]?.assets ?? null)
+  if (!baseData.some((v) => v)) return null
+
+  return {
+    backgroundColor: 'transparent',
+    tooltip: {
+      trigger: 'axis',
+      formatter: (items) => {
+        const lines = [items[0]?.axisValueLabel || items[0]?.axisValue]
+        for (const item of items) {
+          if (item.value == null) continue
+          lines.push(`${item.marker}${item.seriesName}: ${formatMoney(item.value, cur)}`)
+        }
+        return lines.join('<br/>')
+      },
+    },
+    legend: { textStyle: { color: '#cbd5e1' }, top: 0 },
+    grid: { left: 72, right: 24, top: 56, bottom: 32 },
+    xAxis: {
+      type: 'category',
+      data: labels,
+      axisLabel: { color: '#94a3b8', interval: chartLabelInterval.value },
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: {
+        color: '#94a3b8',
+        formatter: (value) => {
+          if (Math.abs(value) >= 10000) return `${(value / 10000).toFixed(0)}万`
+          return String(value)
+        },
+      },
+      splitLine: { lineStyle: { color: '#1f2937' } },
+    },
+    series: [
+      {
+        name: '关危机加仓 资产',
+        type: 'line',
+        smooth: true,
+        showSymbol: false,
+        data: baseData,
+        color: '#94a3b8',
+        lineStyle: { width: 2 },
+      },
+      {
+        name: '开危机加仓 资产',
+        type: 'line',
+        smooth: true,
+        showSymbol: false,
+        data: vixData,
+        color: '#f59e0b',
+        lineStyle: { width: 2.2 },
+      },
+    ],
+  }
+})
+
+const vixCompareRows = computed(() => {
+  const cur = compareCurrency.value
+  const base = vixBaselineVariant.value
+  const vixRun = vixOnRun.value
+  if (!base || !vixRun) return []
+  if (!vixRun?.settings?.enabled) return []
+
+  const baseSummary = (base.currency_summaries || []).find((s) => s.currency === cur)
+  const vixSummary = (vixRun.currency_summaries || []).find((s) => s.currency === cur)
+  if (!baseSummary || !vixSummary) return []
+
+  const rows = [
+    {
+      label: '期末资产',
+      base: formatMoney(baseSummary.final_assets, cur),
+      vix: formatMoney(vixSummary.final_assets, cur),
+      delta: formatMoney(vixSummary.final_assets - baseSummary.final_assets, cur),
+      positive: vixSummary.final_assets >= baseSummary.final_assets,
+    },
+    {
+      label: '收益率',
+      base: formatPercent(baseSummary.return_rate),
+      vix: formatPercent(vixSummary.return_rate),
+      delta: `${((vixSummary.return_rate ?? 0) - (baseSummary.return_rate ?? 0)).toFixed(2)} pt`,
+      positive: (vixSummary.return_rate ?? 0) >= (baseSummary.return_rate ?? 0),
+    },
+    {
+      label: '年化 CAGR',
+      base: formatPercent(baseSummary.cagr),
+      vix: formatPercent(vixSummary.cagr),
+      delta: `${((vixSummary.cagr ?? 0) - (baseSummary.cagr ?? 0)).toFixed(2)} pt`,
+      positive: (vixSummary.cagr ?? 0) >= (baseSummary.cagr ?? 0),
+    },
+    {
+      label: '最大回撤',
+      base: `${baseSummary.max_drawdown_pct}%`,
+      vix: `${vixSummary.max_drawdown_pct}%`,
+      delta: `${(vixSummary.max_drawdown_pct - baseSummary.max_drawdown_pct).toFixed(2)} pt`,
+      positive: vixSummary.max_drawdown_pct <= baseSummary.max_drawdown_pct,
+    },
+  ]
+
+  return rows
 })
 
 const summaryColumns = [
@@ -412,7 +549,7 @@ const displaySummaries = computed(() => {
       <div>
         <h1 class="page-title">历史回测</h1>
         <p class="page-desc">
-          以 ^IXIC / ^GSPC 月收盘价模拟建仓+定投；大陆按 CNY、香港按 USD 分别统计（不折算汇率）
+          以 ^IXIC / ^GSPC 收盘价模拟建仓+定投（周频/日频）；大陆按 CNY、香港按 USD 分别统计（不折算汇率）
         </p>
       </div>
     </div>
@@ -433,6 +570,9 @@ const displaySummaries = computed(() => {
         <NFormItem label="结束">
           <NDatePicker v-model:value="form.end" type="date" style="width: 150px" />
         </NFormItem>
+        <NFormItem label="回测频率">
+          <NSelect v-model:value="form.frequency" :options="frequencyOptions" style="width: 140px" />
+        </NFormItem>
         <NFormItem label="图表币种">
           <NSelect v-model:value="form.currencyView" :options="currencyOptions" style="width: 160px" />
         </NFormItem>
@@ -448,7 +588,7 @@ const displaySummaries = computed(() => {
         <NButton quaternary type="primary" @click="loadBacktest">刷新</NButton>
       </NForm>
       <p class="hint-text">
-        投入金额与建仓/定投节奏读取「参数配置」；组合按纳指/标普目标比例分配。每月末按收盘价买入，仅为历史参考，不代表 QDII 实际收益。
+        投入金额与建仓/定投节奏读取「参数配置」；组合按纳指/标普目标比例分配。买入按计划周执行，估值按所选频率（周末/每日收盘）；若日频源不可用会自动用本地月线兜底，此时 MA 按约 10 个月窗口计算。仅为历史参考，不代表 QDII 实际收益。
       </p>
     </div>
 
@@ -458,6 +598,13 @@ const displaySummaries = computed(() => {
           <div class="metric-label">回测区间</div>
           <div class="metric-value" style="font-size: 16px">
             {{ result.start_date }} ~ {{ result.end_date }}
+            · {{ result.frequency === 'daily' ? '日频' : '周频' }}
+            <span v-if="result.price_cadence === 'monthly'" style="color: #f59e0b">
+              · 行情为月线兜底
+            </span>
+            <span v-else-if="result.ma_cadence">
+              · MA按{{ result.ma_cadence === 'daily' ? '日' : result.ma_cadence === 'weekly' ? '周' : '月' }}线
+            </span>
           </div>
         </div>
         <div class="metric-card">
@@ -501,6 +648,25 @@ const displaySummaries = computed(() => {
           size="small"
           style="margin-top: 16px"
         />
+      </div>
+
+      <div v-if="vixComparisonChartOption" class="panel" style="margin-bottom: 16px">
+        <h3>危机加仓对比（{{ compareCurrency }}）</h3>
+        <p class="hint-text" style="margin-top: 0; margin-bottom: 12px">
+          MA(8) 关危机加仓 vs 开危机加仓：需 <b>VIX≥25 且指数回撤≥20%</b> 才追加预算（倍数×当次定投，不走 MA 池）。回撤 20/30/40% × VIX 25–35 / ≥35 → ×0.25/0.4/0.5/0.75/0.75/1.0；单次最多 ×1.0，年度上限为常规定投的 50%。
+        </p>
+        <VChart :option="vixComparisonChartOption" autoresize style="height: 360px" />
+        <div v-if="vixCompareRows.length" class="vix-compare-grid">
+          <div class="vix-compare-head">
+            <span>指标</span><span>关危机</span><span>开危机</span><span>差异</span>
+          </div>
+          <div v-for="row in vixCompareRows" :key="row.label" class="vix-compare-row">
+            <span class="vix-compare-label">{{ row.label }}</span>
+            <span>{{ row.base }}</span>
+            <span>{{ row.vix }}</span>
+            <span :class="row.positive ? 'positive' : 'negative'">{{ row.delta }}</span>
+          </div>
+        </div>
       </div>
 
       <div class="panel" style="margin-bottom: 16px">
@@ -600,6 +766,33 @@ h3 {
 .plan-title {
   font-weight: 600;
   margin-bottom: 4px;
+}
+
+.vix-compare-grid {
+  margin-top: 16px;
+  font-size: 13px;
+}
+
+.vix-compare-head,
+.vix-compare-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr 1fr;
+  gap: 8px;
+  padding: 8px 4px;
+}
+
+.vix-compare-head {
+  color: #8b98a5;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.vix-compare-row {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  color: #cbd5e1;
+}
+
+.vix-compare-label {
+  color: #94a3b8;
 }
 
 </style>

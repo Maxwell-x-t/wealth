@@ -26,6 +26,8 @@ export const getInvestmentPlans = (params = {}) =>
   client.get('/investment-plans', { params }).then((r) => r.data)
 export const getInvestmentPlanOverview = () =>
   client.get('/investment-plans/overview').then((r) => r.data)
+export const getDcaLiveSignal = () =>
+  client.get('/dca-signals/live', { timeout: 30000 }).then((r) => r.data)
 export const skipInvestmentPlan = (data) =>
   client.post('/investment-plans/skip', data).then((r) => r.data)
 
@@ -35,7 +37,7 @@ export const getRiskSimulation = (params = {}) =>
   client.get('/forecast/risk', { params }).then((r) => r.data)
 
 export const getHistoricalBacktest = (params = {}) =>
-  client.get('/backtest', { params, timeout: 60000 }).then((r) => r.data)
+  client.get('/backtest', { params, timeout: 180000 }).then((r) => r.data)
 
 export const getAnnualReview = (params = {}) =>
   client.get('/annual-review', { params }).then((r) => r.data)
@@ -56,3 +58,7 @@ export const getExchangeRateHistory = () => client.get('/exchange-rates').then((
 export const createExchangeRate = (data) => client.post('/exchange-rates', data).then((r) => r.data)
 export const refreshExchangeRate = () =>
   client.post('/exchange-rates/refresh', null, { timeout: 20000 }).then((r) => r.data)
+
+export const getIndexDataStatus = () => client.get('/index-data/status').then((r) => r.data)
+export const refreshIndexData = (data) =>
+  client.post('/index-data/refresh', data, { timeout: 60000 }).then((r) => r.data)

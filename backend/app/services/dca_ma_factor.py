@@ -15,6 +15,7 @@ from app.services.index_history import (
     NASDAQ_SYMBOL,
     SP500_SYMBOL,
     fetch_monthly_closes,
+    price_on_date,
     price_on_month,
 )
 
@@ -22,6 +23,7 @@ INDEX_SYMBOL = {"nasdaq": NASDAQ_SYMBOL, "sp500": SP500_SYMBOL}
 
 # 一个月约 21 个交易日
 TRADING_DAYS_PER_MONTH = 21
+TRADING_DAYS_PER_WEEK = 5
 
 
 def _is_truthy(value) -> bool:
@@ -41,6 +43,10 @@ def resolve_ma_settings(config: dict) -> dict:
 
 def window_months_from_days(window_days: int) -> int:
     return max(2, round(window_days / TRADING_DAYS_PER_MONTH))
+
+
+def window_weeks_from_days(window_days: int) -> int:
+    return max(2, round(window_days / TRADING_DAYS_PER_WEEK))
 
 
 def compute_ma_factor(deviation_pct: float, settings: dict) -> float:
@@ -67,6 +73,71 @@ def compute_ma_factor(deviation_pct: float, settings: dict) -> float:
     return max(min_factor, min(max_factor, factor))
 
 
+VIX_TOTAL_MIN_FACTOR = 0.7
+VIX_TOTAL_MAX_FACTOR = 1.4
+
+
+def vix_risk_factor(vix_level: float) -> float:
+    """VIX 风险门控：分段上调买入因子。"""
+    if vix_level < 18:
+        return 1.0
+    if vix_level < 25:
+        return 1.05
+    if vix_level < 35:
+        return 1.10
+    return 1.20
+
+
+def combine_risk_factors(ma_factor: float, vix_factor: float) -> float:
+    return max(VIX_TOTAL_MIN_FACTOR, min(VIX_TOTAL_MAX_FACTOR, ma_factor * vix_factor))
+
+
+def live_category_ma_factor(
+    config: dict,
+    category: str,
+    live_price: float,
+    as_of: Optional[date] = None,
+    daily_series: Optional[Dict[date, float]] = None,
+) -> dict:
+    """盘中：用日频 MA + 实时指数价计算因子。"""
+    settings = resolve_ma_settings(config)
+    result = _blank_result(category, settings["enabled"])
+    if live_price <= 0:
+        return result
+
+    symbol = INDEX_SYMBOL.get(category)
+    if not symbol:
+        return result
+
+    as_of = as_of or date.today()
+    window_days = settings["window_days"]
+    lead_start = date(as_of.year - 2, 1, 1)
+
+    if daily_series is None:
+        try:
+            from app.services.index_history import fetch_daily_closes
+
+            daily_series = fetch_daily_closes(symbol, lead_start, as_of, timeout=15.0)
+        except Exception:
+            return result
+
+    series = dict(daily_series)
+    series[as_of] = float(live_price)
+
+    deviation = daily_ma_deviation(series, as_of, window_days)
+    if deviation is None:
+        return result
+
+    factor = compute_ma_factor(deviation, settings) if settings["enabled"] else 1.0
+    result["enabled"] = settings["enabled"]
+    result["deviation_pct"] = round(deviation, 2)
+    result["factor"] = round(factor, 4)
+    result["live_price"] = round(live_price, 2)
+    if settings["enabled"] and abs(factor - 1.0) > 1e-6:
+        result["note"] = _factor_note(category, deviation, factor)
+    return result
+
+
 def monthly_ma_deviation(
     series: Dict[Tuple[int, int], float],
     year: int,
@@ -82,6 +153,44 @@ def monthly_ma_deviation(
     if ma <= 0:
         return None
     current = price_on_month(series, year, month)
+    if current is None or current <= 0:
+        return None
+    return (current - ma) / ma * 100.0
+
+
+def daily_ma_deviation(
+    series: Dict[date, float],
+    as_of: date,
+    window_days: int,
+) -> Optional[float]:
+    """当日收盘相对最近 window_days 个交易日均线的偏离度（%）。"""
+    keys = sorted(d for d in series if d <= as_of)
+    if len(keys) < window_days:
+        return None
+    window = keys[-window_days:]
+    ma = sum(series[k] for k in window) / len(window)
+    if ma <= 0:
+        return None
+    current = price_on_date(series, as_of)
+    if current is None or current <= 0:
+        return None
+    return (current - ma) / ma * 100.0
+
+
+def weekly_ma_deviation(
+    series: Dict[date, float],
+    as_of: date,
+    window_weeks: int,
+) -> Optional[float]:
+    """当周收盘相对最近 window_weeks 个周均线的偏离度（%）。"""
+    keys = sorted(d for d in series if d <= as_of)
+    if len(keys) < window_weeks:
+        return None
+    window = keys[-window_weeks:]
+    ma = sum(series[k] for k in window) / len(window)
+    if ma <= 0:
+        return None
+    current = price_on_date(series, as_of)
     if current is None or current <= 0:
         return None
     return (current - ma) / ma * 100.0

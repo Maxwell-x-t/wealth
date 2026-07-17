@@ -75,6 +75,7 @@ def _config_to_schema(config: dict) -> AllocationTarget:
         dca_boost_30_pct_amount=float(config.get("dca_boost_30_pct_amount", 20000)),
         dca_boost_40_pct_amount=float(config.get("dca_boost_40_pct_amount", 30000)),
         dca_boost_monthly_cap=float(config.get("dca_boost_monthly_cap", 30000)),
+        dca_boost_annual_cap_pct=float(config.get("dca_boost_annual_cap_pct", 50)),
         dca_boost_cash_available=float(config.get("dca_boost_cash_available", 0)),
         dca_boost_lookback_days=int(float(config.get("dca_boost_lookback_days", 365))),
         dca_ma_enabled=str(config.get("dca_ma_enabled", "0")) in ("1", "true", "True"),
