@@ -13,7 +13,7 @@
 
 body {
   margin: 0;
-  min-width: 1200px;
+  min-width: 320px;
   background: #0b0f14;
 }
 
@@ -37,7 +37,7 @@ body {
 .metric-card {
   background: #121821;
   border: 1px solid #1f2a37;
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 14px 16px;
 }
 
@@ -76,7 +76,7 @@ body {
 .panel {
   background: #121821;
   border: 1px solid #1f2a37;
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 16px;
 }
 

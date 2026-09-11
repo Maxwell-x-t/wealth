@@ -9,3 +9,4 @@ holidays==0.63
 httpx==0.28.1
 pandas==2.2.3
 pandas-datareader==0.10.0
+-e ../strategy

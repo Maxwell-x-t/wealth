@@ -1,0 +1,11 @@
+{
+  "as_of": "填写持仓核对日期 YYYY-MM-DD",
+  "cash": null,
+  "positions": {
+    "sh600036": null,
+    "sh512890": null
+  },
+  "etf_layers": null,
+  "external_assets": {},
+  "etf_industry_weights": {}
+}

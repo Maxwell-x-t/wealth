@@ -1,0 +1,6 @@
+{
+  "min_cash_pct": 20.0,
+  "max_industry_pct": 30.0,
+  "industry_limits": {},
+  "etf_budget_pct": 20.0
+}

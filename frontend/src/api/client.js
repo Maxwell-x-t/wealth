@@ -5,6 +5,14 @@ const client = axios.create({
   timeout: 15000,
 })
 
+export const getStrategyAccounts = () => client.get('/strategy/accounts').then(r => r.data)
+export const getStrategyAccount = id => client.get(`/strategy/accounts/${id}`).then(r => r.data)
+export const getCashEvents = id => client.get(`/strategy/accounts/${id}/cash-events`).then(r => r.data)
+export const createCashEvent = (id, data) => client.post(`/strategy/accounts/${id}/cash-events`, data).then(r => r.data)
+export const deleteCashEvent = (id, eventId) => client.delete(`/strategy/accounts/${id}/cash-events/${eventId}`).then(r => r.data)
+export const getStrategySignals = id => client.get(`/strategy/accounts/${id}/signals`).then(r => r.data)
+export const refreshStrategySignals = id => client.post(`/strategy/accounts/${id}/signals`, null, { timeout: 260000 }).then(r => r.data)
+
 export const getDashboard = () => client.get('/dashboard').then((r) => r.data)
 export const getDashboardHistory = () => client.get('/dashboard/history').then((r) => r.data)
 export const getConfig = () => client.get('/config').then((r) => r.data)

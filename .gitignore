@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv
+.venv-*/
 venv/
 *.egg-info/
 .pytest_cache/
@@ -23,3 +25,15 @@ frontend/dist/
 # Env
 .env
 .env.local
+strategy/account.json
+strategy/account.*.json
+!strategy/account.example.json
+strategy/holdings.json
+strategy/rsi6_holdings.json
+strategy/rsi6_state.json
+strategy/backtests/
+strategy/logs/
+strategy/.env*
+!strategy/.env.local.example
+frontend/test-results/
+frontend/playwright-report/

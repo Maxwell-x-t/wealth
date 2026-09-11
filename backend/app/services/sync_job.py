@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -130,6 +131,8 @@ def _loop():
 
 def start_scheduler() -> None:
     global _thread
+    if os.environ.get("WEALTH_DISABLE_SYNC") == "1":
+        return
     if _thread is not None and _thread.is_alive():
         return
     _stop_event.clear()

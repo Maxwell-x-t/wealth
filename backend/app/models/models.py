@@ -70,6 +70,8 @@ class Transaction(Base):
     exchange_rate: Mapped[float] = mapped_column(Numeric(18, 6), nullable=False, default=1)
     note: Mapped[Optional[str]] = mapped_column(Text)
     plan_phase: Mapped[Optional[str]] = mapped_column(String(20))
+    etf_layers_after: Mapped[Optional[int]] = mapped_column()
+    request_id: Mapped[Optional[str]] = mapped_column(String(36), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     account: Mapped["Account"] = relationship(back_populates="transactions")
@@ -104,4 +106,29 @@ class FxRateSnapshot(Base):
     pair: Mapped[str] = mapped_column(String(20), nullable=False, default="USD/CNY")
     rate: Mapped[float] = mapped_column(Numeric(18, 6), nullable=False)
     snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class StrategyAccount(Base):
+    __tablename__ = "strategy_accounts"
+
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), primary_key=True)
+    opening_json: Mapped[str] = mapped_column(Text)
+    current_json: Mapped[str] = mapped_column(Text)
+    revision: Mapped[int] = mapped_column(default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CashEvent(Base):
+    __tablename__ = "cash_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
+    event_date: Mapped[date] = mapped_column(Date)
+    kind: Mapped[str] = mapped_column(String(20))
+    amount: Mapped[float] = mapped_column(Numeric(18, 4), default=0)
+    instrument_id: Mapped[Optional[int]] = mapped_column(ForeignKey("instruments.id"))
+    quantity: Mapped[float] = mapped_column(Numeric(18, 6), default=0)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    request_id: Mapped[str] = mapped_column(String(36), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

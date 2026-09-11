@@ -1,0 +1,11 @@
+{
+  "payout_warn": 80,
+  "payout_risk": 100,
+  "flag_negative_eps": true,
+  "veto_buy_on_risk": true,
+  "veto_buy_on_unknown": true,
+  "veto_buy_on_coverage_risk": true,
+  "veto_buy_on_coverage_unknown": true,
+  "coverage_reviews": {},
+  "exit_reasons": {}
+}

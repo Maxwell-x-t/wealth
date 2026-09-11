@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+import json
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.models.models import Instrument, PriceSnapshot, Transaction
+from app.models.models import Instrument, PriceSnapshot, StrategyAccount, Transaction
 
 
 D = Decimal
@@ -49,11 +50,32 @@ def compute_instrument_states(db: Session, as_of: Optional[date] = None) -> dict
     if as_of is not None:
         query = query.filter(Transaction.trade_date <= as_of)
     transactions = query.all()
-    return _instrument_states_from_transactions(transactions)
+    states = {}
+    managed = {ledger.account_id: ledger for ledger in db.query(StrategyAccount)}
+    from app.services.ledger import canonical_code, ledger_rows
+    for ledger in managed.values():
+        raw = json.loads(ledger.opening_json)
+        if as_of and as_of < date.fromisoformat(raw["as_of"]):
+            continue
+        for instrument in db.query(Instrument).filter_by(account_id=ledger.account_id):
+            code = canonical_code(instrument.code)
+            qty = D(str(raw["positions"].get(code, 0)))
+            # Opening market values are the performance baseline, not acquisition costs.
+            cost = qty * D(str(raw["reference_prices"].get(code, 0)))
+            states[instrument.id] = InstrumentState(instrument.id, qty, cost, D("0"))
+        for row in ledger_rows(db, ledger.account_id, as_of):
+            if isinstance(row, Transaction):
+                _instrument_states_from_transactions([row], states)
+            elif row.kind == "shares":
+                state = states[row.instrument_id]
+                state.quantity += D(str(row.quantity))
+                if state.quantity < 0:
+                    raise ValueError("送转调整后持仓不能为负")
+    return _instrument_states_from_transactions([tx for tx in transactions if tx.account_id not in managed], states)
 
 
-def _instrument_states_from_transactions(transactions: list[Transaction]) -> dict[int, InstrumentState]:
-    states: dict[int, InstrumentState] = {}
+def _instrument_states_from_transactions(transactions: list[Transaction], states=None) -> dict[int, InstrumentState]:
+    states = {} if states is None else states
 
     for tx in transactions:
         qty = _to_decimal(tx.quantity)
@@ -134,7 +156,8 @@ def total_assets_cny_as_of(
         market_value = (state.quantity * price).quantize(TWO)
         total += convert_market_to_cny(market_value, instrument.currency, usd_cny_rate)
 
-    return total.quantize(TWO)
+    from app.services.ledger import managed_cash
+    return (total + sum(cash for _, cash in managed_cash(db, as_of))).quantize(TWO)
 
 
 def get_latest_prices(db: Session) -> dict[int, D]:
@@ -251,9 +274,17 @@ def build_holdings(
                 "unrealized_pnl_rate": unrealized_rate,
                 "realized_pnl": float(state.realized_pnl),
                 "realized_pnl_cny": float(realized_cny),
+                "basis_label": "期初市值" if db.get(StrategyAccount, instrument.account_id) else "买入成本",
             }
         )
 
+    from app.services.ledger import managed_cash
+    for account, cash in managed_cash(db):
+        holdings.append(dict(instrument_id=-account.id, code="CASH", name="可用现金", category="cash",
+            account_id=account.id, account_name=account.name, currency="CNY", quantity=float(cash),
+            avg_cost=1, total_cost=float(cash), current_price=1, market_value=float(cash),
+            market_value_cny=float(cash), unrealized_pnl=0, unrealized_pnl_cny=0,
+            unrealized_pnl_rate=0, realized_pnl=0, realized_pnl_cny=0, basis_label="账户余额"))
     total_assets_cny = sum(h["market_value_cny"] for h in holdings) or 0.0
     for holding in holdings:
         holding["weight"] = (

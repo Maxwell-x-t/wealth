@@ -9,10 +9,12 @@ import ExchangeRatesView from '../views/ExchangeRatesView.vue'
 import ForecastView from '../views/ForecastView.vue'
 import BacktestView from '../views/BacktestView.vue'
 import AnnualReviewView from '../views/AnnualReviewView.vue'
+import StrategyView from '../views/StrategyView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
+    { path: '/strategy', name: 'strategy', component: StrategyView },
     { path: '/', name: 'dashboard', component: DashboardView },
     { path: '/plans', name: 'plans', component: InvestmentPlansView },
     { path: '/forecast', name: 'forecast', component: ForecastView },

@@ -43,9 +43,9 @@ const holdingColumns = [
   { title: '账户', key: 'account_name', width: 80 },
   { title: '数量', key: 'quantity', render: (row) => formatNumber(row.quantity, 4) },
   {
-    title: '成本价',
+    title: '成本 / 期初参考价',
     key: 'avg_cost',
-    render: (row) => formatPrice(row.avg_cost, row.currency),
+    render: (row) => h('div', [formatPrice(row.avg_cost, row.currency), h('small', { style: 'display:block;color:#9ca6aa' }, row.basis_label)]),
   },
   {
     title: '现价',

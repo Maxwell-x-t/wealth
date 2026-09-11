@@ -1,7 +1,8 @@
 from datetime import date, datetime
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+from uuid import UUID
 
 
 class AccountOut(BaseModel):
@@ -42,33 +43,44 @@ class InstrumentOut(InstrumentBase):
 
 
 class TransactionBase(BaseModel):
+    model_config = {"allow_inf_nan": False}
     trade_date: date
     account_id: int
     instrument_id: int
     side: Literal["buy", "sell"]
-    quantity: float = Field(gt=0)
-    price: float = Field(ge=0)
-    fee: float = Field(ge=0, default=0)
-    exchange_rate: float = Field(gt=0, default=1)
+    quantity: float = Field(gt=0, le=1e8)
+    price: float = Field(ge=0, le=1e5)
+    fee: float = Field(ge=0, le=1e12, default=0)
+    exchange_rate: float = Field(gt=0, le=1e6, default=1)
     note: Optional[str] = None
     plan_phase: Optional[Literal["building", "dca"]] = None
+    etf_layers_after: Optional[int] = Field(default=None, ge=0, le=10, strict=True)
 
 
 class TransactionCreate(TransactionBase):
-    pass
+    request_id: Optional[UUID] = None
 
 
 class TransactionUpdate(BaseModel):
+    model_config = {"allow_inf_nan": False}
     trade_date: Optional[date] = None
     account_id: Optional[int] = None
     instrument_id: Optional[int] = None
     side: Optional[Literal["buy", "sell"]] = None
-    quantity: Optional[float] = Field(default=None, gt=0)
-    price: Optional[float] = Field(default=None, ge=0)
-    fee: Optional[float] = Field(default=None, ge=0)
-    exchange_rate: Optional[float] = Field(default=None, gt=0)
+    quantity: Optional[float] = Field(default=None, gt=0, le=1e8)
+    price: Optional[float] = Field(default=None, ge=0, le=1e5)
+    fee: Optional[float] = Field(default=None, ge=0, le=1e12)
+    exchange_rate: Optional[float] = Field(default=None, gt=0, le=1e6)
     note: Optional[str] = None
     plan_phase: Optional[Literal["building", "dca"]] = None
+    etf_layers_after: Optional[int] = Field(default=None, ge=0, le=10, strict=True)
+
+    @model_validator(mode="after")
+    def reject_required_nulls(self):
+        for field in self.model_fields_set - {"note", "plan_phase", "etf_layers_after"}:
+            if getattr(self, field) is None:
+                raise ValueError(f"{field} 不能为空")
+        return self
 
 
 class TransactionOut(TransactionBase):
@@ -233,6 +245,7 @@ class AllocationTarget(BaseModel):
 
 
 class HoldingOut(BaseModel):
+    basis_label: str = "买入成本"
     instrument_id: int
     code: str
     name: str

@@ -25,6 +25,7 @@ import {
   getInstruments,
   getLatestExchangeRate,
   getTransactions,
+  getStrategyAccounts,
   updateTransaction,
 } from '../api/client'
 import { formatMoney, formatNumber, formatPrice } from '../utils/format'
@@ -41,6 +42,9 @@ const accounts = ref([])
 const instruments = ref([])
 const defaultUsdRate = ref(7.2)
 const includeFee = ref(false)
+const saving = ref(false)
+const requestId = ref(crypto.randomUUID())
+const managedAccounts = ref([])
 
 const form = reactive({
   trade_date: Date.now(),
@@ -53,6 +57,7 @@ const form = reactive({
   exchange_rate: 1,
   note: '',
   plan_phase: null,
+  etf_layers_after: null,
 })
 
 const phaseFilter = ref(null)
@@ -83,6 +88,13 @@ const sideOptions = [
 const selectedInstrument = computed(() =>
   instruments.value.find((item) => item.id === form.instrument_id),
 )
+const managed = computed(() => managedAccounts.value.some(a => a.id === form.account_id))
+const needsLayers = computed(() => managed.value && selectedInstrument.value?.code === '512890')
+watch(() => form.account_id, id => {
+  if (instruments.value.find(i => i.id === form.instrument_id)?.account_id !== id) {
+    form.instrument_id = instruments.value.find(i => i.account_id === id)?.id ?? null
+  }
+})
 
 const isUsd = computed(() => selectedInstrument.value?.currency === 'USD')
 const currencySymbol = computed(() => (isUsd.value ? 'USD' : 'CNY'))
@@ -108,18 +120,20 @@ async function loadData() {
     if (phaseFilter.value === 'building' || phaseFilter.value === 'dca') {
       txParams.plan_phase = phaseFilter.value
     }
-    const [txRows, accountRows, instrumentRows, config, latestFx] = await Promise.all([
+    const [txRows, accountRows, instrumentRows, config, latestFx, strategyAccounts] = await Promise.all([
       getTransactions(txParams),
       getAccounts(),
       getInstruments(true),
       getConfig(),
       getLatestExchangeRate(),
+      getStrategyAccounts(),
     ])
     transactions.value = phaseFilter.value === 'unlabeled'
       ? txRows.filter((row) => !row.plan_phase)
       : txRows
     accounts.value = accountRows
     instruments.value = instrumentRows
+    managedAccounts.value = strategyAccounts
     defaultUsdRate.value = latestFx?.rate || config.usd_cny_rate || 7.2
   } finally {
     loading.value = false
@@ -220,6 +234,8 @@ watch(includeFee, (enabled) => {
 })
 
 function resetForm() {
+  requestId.value = crypto.randomUUID()
+  form.etf_layers_after = null
   editingId.value = null
   form.trade_date = Date.now()
   form.account_id = accounts.value[0]?.id ?? null
@@ -241,6 +257,7 @@ function openCreate() {
 }
 
 function openEdit(row) {
+  form.etf_layers_after = row.etf_layers_after ?? null
   editingId.value = row.id
   form.trade_date = new Date(row.trade_date).getTime()
   form.account_id = row.account_id
@@ -257,13 +274,14 @@ function openEdit(row) {
 }
 
 async function submitForm() {
+  if (saving.value) return
   if (swapSuggestion.value) {
     message.error('数量与成交价疑似填反，请先纠正后再保存')
     return
   }
 
   const payload = {
-    trade_date: new Date(form.trade_date).toISOString().slice(0, 10),
+    trade_date: new Date(form.trade_date).toLocaleDateString('sv-SE'),
     account_id: form.account_id,
     instrument_id: form.instrument_id,
     side: form.side,
@@ -273,20 +291,24 @@ async function submitForm() {
     exchange_rate: isUsd.value ? form.exchange_rate : 1,
     note: form.note || null,
     plan_phase: form.side === 'buy' ? form.plan_phase : null,
+    etf_layers_after: needsLayers.value ? form.etf_layers_after : null,
   }
 
+  saving.value = true
   try {
     if (editingId.value) {
       await updateTransaction(editingId.value, payload)
       message.success('交易已更新')
     } else {
-      await createTransaction(payload)
+      await createTransaction({ ...payload, request_id: requestId.value })
       message.success('交易已添加')
     }
     showModal.value = false
     await loadData()
   } catch (error) {
     message.error(error.response?.data?.detail || '保存失败')
+  } finally {
+    saving.value = false
   }
 }
 
@@ -420,7 +442,7 @@ const columns = [
       v-model:show="showModal"
       preset="card"
       :title="editingId ? '编辑交易' : '新增交易'"
-      style="width: 580px"
+      style="width: min(580px, calc(100vw - 28px))"
     >
       <NForm label-placement="left" label-width="120">
         <NFormItem label="日期">
@@ -435,7 +457,7 @@ const columns = [
         <NFormItem label="品种">
           <NSelect
             v-model:value="form.instrument_id"
-            :options="instruments.map((item) => ({ label: `${item.code} ${item.name} (${item.currency})`, value: item.id }))"
+            :options="instruments.filter(item => item.account_id === form.account_id).map((item) => ({ label: `${item.code} ${item.name} (${item.currency})`, value: item.id }))"
           />
         </NFormItem>
         <NFormItem label="记账币种">
@@ -444,7 +466,8 @@ const columns = [
         <NFormItem label="方向">
           <NSelect v-model:value="form.side" :options="sideOptions" />
         </NFormItem>
-        <NFormItem v-if="form.side === 'buy'" label="投入阶段">
+        <NFormItem v-if="needsLayers" label="成交后层数"><NInputNumber v-model:value="form.etf_layers_after" :min="0" :max="10" :precision="0" /></NFormItem>
+        <NFormItem v-if="form.side === 'buy' && !managed" label="投入阶段">
           <NSelect v-model:value="form.plan_phase" :options="planPhaseOptions" clearable />
         </NFormItem>
         <NFormItem label="数量">
@@ -494,7 +517,7 @@ const columns = [
       <template #footer>
         <NSpace justify="end">
           <NButton @click="showModal = false">取消</NButton>
-          <NButton type="primary" @click="submitForm">保存</NButton>
+          <NButton type="primary" :loading="saving" @click="submitForm">保存</NButton>
         </NSpace>
       </template>
     </NModal>

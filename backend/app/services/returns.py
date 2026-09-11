@@ -6,7 +6,8 @@ from decimal import Decimal
 import pyxirr
 from sqlalchemy.orm import Session
 
-from app.models.models import Instrument, PriceSnapshot, Transaction
+from app.models.models import CashEvent, Instrument, PriceSnapshot, StrategyAccount, Transaction
+from app.services.ledger import external_flows
 from app.services.allocation import compute_rebalance_detail
 from app.services.allocation_targets import (
     build_account_category_allocations,
@@ -31,8 +32,11 @@ def compute_cashflows(db: Session, usd_cny_rate: float = 7.2) -> tuple[list[date
         .all()
     )
     flows_by_date: dict[date, Decimal] = {}
+    managed = {row.account_id for row in db.query(StrategyAccount)}
 
     for tx in transactions:
+        if tx.account_id in managed:
+            continue
         amount = _to_decimal(tx.amount) if tx.amount else _to_decimal(tx.quantity) * _to_decimal(tx.price)
         fee = _to_decimal(tx.fee)
         instrument = db.query(Instrument).filter(Instrument.id == tx.instrument_id).one()
@@ -47,6 +51,8 @@ def compute_cashflows(db: Session, usd_cny_rate: float = 7.2) -> tuple[list[date
 
         flows_by_date[tx.trade_date] = flows_by_date.get(tx.trade_date, Decimal("0")) + cash
 
+    for flow_date, cash in external_flows(db):
+        flows_by_date[flow_date] = flows_by_date.get(flow_date, Decimal("0")) + cash
     dates = sorted(flows_by_date.keys())
     amounts = [float(flows_by_date[d]) for d in dates]
     return dates, amounts
@@ -57,10 +63,13 @@ def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
     holdings = build_holdings(db, usd_cny_rate=usd_cny_rate)
 
     transactions = db.query(Transaction).all()
+    managed = {row.account_id for row in db.query(StrategyAccount)}
     buy_total = Decimal("0")
     sell_total = Decimal("0")
 
     for tx in transactions:
+        if tx.account_id in managed:
+            continue
         amount = _to_decimal(tx.amount) if tx.amount else _to_decimal(tx.quantity) * _to_decimal(tx.price)
         fee = _to_decimal(tx.fee)
         instrument = db.query(Instrument).filter(Instrument.id == tx.instrument_id).one()
@@ -73,6 +82,11 @@ def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
         else:
             sell_total += cny_amount - cny_fee
 
+    for _, cash in external_flows(db):
+        if cash < 0:
+            buy_total -= cash
+        else:
+            sell_total += cash
     total_assets_cny = Decimal(str(sum(h["market_value_cny"] for h in holdings)))
     net_investment_cny = buy_total - sell_total
     total_return_cny = total_assets_cny + sell_total - buy_total
@@ -84,6 +98,10 @@ def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
 
     unrealized_pnl_cny = Decimal(str(sum(h["unrealized_pnl_cny"] for h in holdings)))
     realized_pnl_cny = Decimal(str(sum(h["realized_pnl_cny"] for h in holdings)))
+    realized_pnl_cny += sum(
+        _to_decimal(event.amount) * (1 if event.kind == "dividend" else -1)
+        for event in db.query(CashEvent) if event.account_id in managed and event.kind in ("dividend", "fee")
+    )
 
     mainland_assets_cny = Decimal("0")
     hk_assets_cny = Decimal("0")
@@ -172,10 +190,13 @@ def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
 
 def _net_investment_cny_as_of(db: Session, as_of: date) -> Decimal:
     transactions = db.query(Transaction).filter(Transaction.trade_date <= as_of).all()
+    managed = {row.account_id for row in db.query(StrategyAccount)}
     buy_total = Decimal("0")
     sell_total = Decimal("0")
 
     for tx in transactions:
+        if tx.account_id in managed:
+            continue
         amount = _to_decimal(tx.amount) if tx.amount else _to_decimal(tx.quantity) * _to_decimal(tx.price)
         fee = _to_decimal(tx.fee)
         instrument = db.query(Instrument).filter(Instrument.id == tx.instrument_id).one()
@@ -187,7 +208,7 @@ def _net_investment_cny_as_of(db: Session, as_of: date) -> Decimal:
         else:
             sell_total += cny_amount - cny_fee
 
-    return buy_total - sell_total
+    return buy_total - sell_total - sum(cash for _, cash in external_flows(db, as_of))
 
 
 def build_asset_history(db: Session, usd_cny_rate: float = 7.2) -> list[dict]:

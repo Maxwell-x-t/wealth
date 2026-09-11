@@ -1,123 +1,81 @@
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.models import Account, Instrument, Transaction
+from app.models.models import Account, Instrument, StrategyAccount, Transaction
 from app.schemas.schemas import TransactionCreate, TransactionOut, TransactionUpdate
 from app.services.config import get_config_map
-from app.services.holdings import compute_instrument_states, convert_transaction_to_cny, _to_decimal
+from app.services.holdings import convert_transaction_to_cny, _to_decimal
+from app.services.ledger import begin_write, rebuild_accounts
 from app.services.transaction_validation import detect_quantity_price_swap, swap_validation_message
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
 
-def _calc_amount(quantity: float, price: float) -> float:
-    return round(quantity * price, 4)
-
-
-def _normalize_exchange_rate(db: Session, instrument: Instrument, exchange_rate: float) -> float:
-    if instrument.currency == "CNY":
-        return 1.0
-    if exchange_rate > 1:
-        return exchange_rate
-    config = get_config_map(db)
-    return float(config.get("usd_cny_rate", 7.2))
-
-
-def _normalize_fee(fee: float) -> float:
-    return max(0.0, float(fee))
-
-
-def _enrich(tx: Transaction) -> TransactionOut:
+def _enrich(tx):
     instrument = tx.instrument
-    currency = instrument.currency if instrument else "CNY"
-    rate = _to_decimal(tx.exchange_rate)
-    amount_cny = float(convert_transaction_to_cny(_to_decimal(tx.amount), currency, rate))
-
+    currency = instrument.currency
     return TransactionOut(
-        id=tx.id,
-        trade_date=tx.trade_date,
-        account_id=tx.account_id,
-        instrument_id=tx.instrument_id,
-        side=tx.side,
-        quantity=float(tx.quantity),
-        price=float(tx.price),
-        amount=float(tx.amount),
-        fee=float(tx.fee),
-        exchange_rate=float(tx.exchange_rate),
-        note=tx.note,
-        plan_phase=tx.plan_phase,
-        amount_cny=amount_cny,
-        currency=currency,
-        created_at=tx.created_at,
-        account_name=tx.account.name if tx.account else None,
-        instrument_name=instrument.name if instrument else None,
-        instrument_code=instrument.code if instrument else None,
+        **{key: getattr(tx, key) for key in TransactionOut.model_fields if hasattr(Transaction, key)},
+        amount_cny=float(convert_transaction_to_cny(_to_decimal(tx.amount), currency, _to_decimal(tx.exchange_rate))),
+        currency=currency, account_name=tx.account.name,
+        instrument_name=instrument.name, instrument_code=instrument.code,
     )
 
 
-def _validate_sell(db: Session, instrument_id: int, quantity: float, exclude_id: Optional[int] = None) -> None:
-    states = compute_instrument_states(db)
-    state = states.get(instrument_id)
-    held = float(state.quantity) if state else 0.0
-
-    if exclude_id:
-        existing = db.query(Transaction).filter(Transaction.id == exclude_id).first()
-        if existing and existing.side == "sell" and existing.instrument_id == instrument_id:
-            held += float(existing.quantity)
-
-    if quantity > held:
-        raise HTTPException(status_code=400, detail=f"卖出数量超过持仓（当前可卖 {held}）")
+def _validate(db, tx):
+    account, instrument = db.get(Account, tx.account_id), db.get(Instrument, tx.instrument_id)
+    if not account or not instrument:
+        raise HTTPException(404, "账户或品种不存在")
+    if instrument.account_id != account.id:
+        raise HTTPException(400, "证券不属于所选账户")
+    if tx.side == "buy" and not instrument.is_active:
+        raise HTTPException(400, "已停用证券不能买入")
+    if tx.side == "buy":
+        suggestion = detect_quantity_price_swap(tx.quantity, tx.price, instrument.currency)
+        if suggestion:
+            raise HTTPException(400, swap_validation_message(suggestion, instrument.currency))
+    if instrument.currency == "CNY":
+        tx.exchange_rate = 1
+    elif tx.exchange_rate <= 1:
+        tx.exchange_rate = float(get_config_map(db).get("usd_cny_rate", 7.2))
+    if not db.get(StrategyAccount, tx.account_id) and tx.etf_layers_after is not None:
+        raise HTTPException(400, "策略层数仅适用于已接入的策略账户")
+    tx.amount = (Decimal(str(tx.quantity)) * Decimal(str(tx.price))).quantize(Decimal("0.0001"))
 
 
 @router.get("", response_model=list[TransactionOut])
-def list_transactions(
-    plan_phase: Optional[str] = Query(default=None),
-    db: Session = Depends(get_db),
-):
+def list_transactions(plan_phase: Optional[str] = Query(default=None), account_id: Optional[int] = None,
+                      db: Session = Depends(get_db)):
     query = db.query(Transaction).order_by(Transaction.trade_date.desc(), Transaction.id.desc())
     if plan_phase in ("building", "dca"):
         query = query.filter(Transaction.plan_phase == plan_phase)
-    rows = query.all()
-    return [_enrich(row) for row in rows]
-
-
-def _validate_qty_price(quantity: float, price: float, currency: str) -> None:
-    suggestion = detect_quantity_price_swap(quantity, price, currency)
-    if suggestion:
-        raise HTTPException(status_code=400, detail=swap_validation_message(suggestion, currency))
+    if account_id is not None:
+        query = query.filter(Transaction.account_id == account_id)
+    return [_enrich(row) for row in query.all()]
 
 
 @router.post("", response_model=TransactionOut)
 def create_transaction(payload: TransactionCreate, db: Session = Depends(get_db)):
-    account = db.query(Account).filter(Account.id == payload.account_id).first()
-    instrument = db.query(Instrument).filter(Instrument.id == payload.instrument_id).first()
-    if not account or not instrument:
-        raise HTTPException(status_code=404, detail="账户或品种不存在")
-
-    if payload.side == "sell":
-        _validate_sell(db, payload.instrument_id, payload.quantity)
-    else:
-        _validate_qty_price(payload.quantity, payload.price, instrument.currency)
-
-    exchange_rate = _normalize_exchange_rate(db, instrument, payload.exchange_rate)
-
-    tx = Transaction(
-        trade_date=payload.trade_date,
-        account_id=payload.account_id,
-        instrument_id=payload.instrument_id,
-        side=payload.side,
-        quantity=payload.quantity,
-        price=payload.price,
-        amount=_calc_amount(payload.quantity, payload.price),
-        fee=_normalize_fee(payload.fee),
-        exchange_rate=exchange_rate,
-        note=payload.note,
-        plan_phase=payload.plan_phase,
-    )
+    begin_write(db)
+    data = payload.model_dump(exclude={"request_id"})
+    request_id = str(payload.request_id) if payload.request_id else None
+    tx = Transaction(**data, request_id=request_id)
+    _validate(db, tx)
+    if request_id:
+        existing = db.query(Transaction).filter_by(request_id=request_id).first()
+        if existing:
+            for key in data:
+                a, b = getattr(existing, key), getattr(tx, key)
+                equal = float(a) == float(b) if key in ("quantity", "price", "fee", "exchange_rate") else a == b
+                if not equal:
+                    raise HTTPException(409, "重复请求编号对应不同成交")
+            return _enrich(existing)
     db.add(tx)
+    rebuild_accounts(db, [tx.account_id])
     db.commit()
     db.refresh(tx)
     return _enrich(tx)
@@ -125,30 +83,15 @@ def create_transaction(payload: TransactionCreate, db: Session = Depends(get_db)
 
 @router.put("/{transaction_id}", response_model=TransactionOut)
 def update_transaction(transaction_id: int, payload: TransactionUpdate, db: Session = Depends(get_db)):
-    tx = db.query(Transaction).filter(Transaction.id == transaction_id).first()
+    begin_write(db)
+    tx = db.get(Transaction, transaction_id)
     if not tx:
-        raise HTTPException(status_code=404, detail="交易记录不存在")
-
-    data = payload.model_dump(exclude_unset=True)
-    side = data.get("side", tx.side)
-    quantity = data.get("quantity", float(tx.quantity))
-    price = data.get("price", float(tx.price))
-    instrument_id = data.get("instrument_id", tx.instrument_id)
-
-    if side == "sell":
-        _validate_sell(db, instrument_id, quantity, exclude_id=transaction_id)
-    else:
-        instrument = db.query(Instrument).filter(Instrument.id == instrument_id).first()
-        if instrument:
-            _validate_qty_price(quantity, price, instrument.currency)
-
-    for key, value in data.items():
+        raise HTTPException(404, "交易记录不存在")
+    old_account = tx.account_id
+    for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(tx, key, value)
-
-    instrument = db.query(Instrument).filter(Instrument.id == tx.instrument_id).one()
-    tx.exchange_rate = _normalize_exchange_rate(db, instrument, float(tx.exchange_rate))
-    tx.amount = _calc_amount(float(tx.quantity), float(tx.price))
-    tx.fee = _normalize_fee(float(tx.fee))
+    _validate(db, tx)
+    rebuild_accounts(db, [old_account, tx.account_id])
     db.commit()
     db.refresh(tx)
     return _enrich(tx)
@@ -156,9 +99,12 @@ def update_transaction(transaction_id: int, payload: TransactionUpdate, db: Sess
 
 @router.delete("/{transaction_id}")
 def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
-    tx = db.query(Transaction).filter(Transaction.id == transaction_id).first()
+    begin_write(db)
+    tx = db.get(Transaction, transaction_id)
     if not tx:
-        raise HTTPException(status_code=404, detail="交易记录不存在")
+        raise HTTPException(404, "交易记录不存在")
+    account_id = tx.account_id
     db.delete(tx)
+    rebuild_accounts(db, [account_id])
     db.commit()
     return {"ok": True}

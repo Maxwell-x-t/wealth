@@ -1,0 +1,34 @@
+[project]
+name = "dividend-grid-reminder"
+version = "0.1.0"
+description = "红利网格仓位管理与提醒（纯个股版）——按个股股息率网格加减仓，并通过企业微信推送提醒"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "akshare>=1.14",
+]
+
+[project.scripts]
+dividend-grid = "dividend_grid.cli:main"
+rsi6-reminder = "dividend_grid.rsi6_cli:main"
+
+[project.optional-dependencies]
+backtest = [
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+    "pandas>=2.0",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dividend_grid"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

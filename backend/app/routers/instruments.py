@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.models import Account, Instrument, Transaction
+from app.models.models import Account, Instrument, StrategyAccount, Transaction
 from app.schemas.schemas import InstrumentCreate, InstrumentOut, InstrumentUpdate
+from app.services.ledger import begin_write, register_instrument
 
 router = APIRouter(prefix="/api/instruments", tags=["instruments"])
 
@@ -49,6 +50,7 @@ def list_instruments(active_only: bool = False, db: Session = Depends(get_db)):
 
 @router.post("", response_model=InstrumentOut)
 def create_instrument(payload: InstrumentCreate, db: Session = Depends(get_db)):
+    begin_write(db)
     account = db.query(Account).filter(Account.id == payload.account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="账户不存在")
@@ -56,6 +58,7 @@ def create_instrument(payload: InstrumentCreate, db: Session = Depends(get_db)):
     _check_duplicate_code(db, payload.account_id, payload.code)
 
     instrument = Instrument(**payload.model_dump())
+    register_instrument(db, instrument)
     db.add(instrument)
     db.commit()
     db.refresh(instrument)
@@ -69,6 +72,10 @@ def update_instrument(instrument_id: int, payload: InstrumentUpdate, db: Session
         raise HTTPException(status_code=404, detail="品种不存在")
 
     data = payload.model_dump(exclude_unset=True)
+    if db.get(StrategyAccount, instrument.account_id) and any(
+        key != "name" and value != getattr(instrument, key) for key, value in data.items()
+    ):
+        raise HTTPException(400, "已接入策略账本的证券仅能修改名称")
     account_id = data.get("account_id", instrument.account_id)
     code = data.get("code", instrument.code)
 
@@ -95,6 +102,8 @@ def delete_instrument(instrument_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="品种不存在")
 
     tx_count = db.query(Transaction).filter(Transaction.instrument_id == instrument_id).count()
+    if db.get(StrategyAccount, instrument.account_id):
+        raise HTTPException(400, "策略账本的期初证券不能删除")
     if tx_count > 0:
         raise HTTPException(status_code=400, detail="该品种已有交易记录，请改为停用而非删除")
 

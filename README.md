@@ -1,6 +1,8 @@
 # Wealth Investment OS
 
-个人长期指数投资管理系统（Investment OS）。本机运行，中文界面。
+个人投资管理系统（Investment OS），统一管理指数定投、红利策略、实际持仓和现金账本。本机运行，中文界面。
+
+`frontend/` 为网页，`backend/` 为接口与 SQLite 账本，`strategy/` 为红利网格、周线 RSI6、回测和本地提醒。根目录执行 `bash start.sh`，访问启动输出的 `/strategy` 页面登记成交。账户迁移和运行说明见 [合并说明](MERGE_NOTES.md)。
 
 ## 技术栈
 
@@ -260,3 +262,8 @@ wealth/
 
 1. 税务模拟  
 2. 券商导入（见 `wealth.txt` 第十七章）
+# 合并后的工程
+
+本仓库现在包含 Wealth 记账系统与 `strategy/` 下的红利网格、512890 RSI、回测和提醒代码。
+运行 `bash start.sh` 后打开输出的 `/strategy` 地址登记实际成交与资金变动。
+账户导入、资金口径与验证说明见 [MERGE_NOTES.md](MERGE_NOTES.md)。
