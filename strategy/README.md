@@ -90,7 +90,7 @@ uv run python scripts/rsi6_calculator.py --session close --notify console --noti
 
 ### 本地定时运行
 
-`scripts/local_reminder.sh` 会在同一时点依次发送原有股息率网格提醒和 512890 RSI6 提醒。使用 macOS `launchd` 每天 **09:00**、**09:30**、**14:00** 和 **15:05** 运行；每个时间点允许上下浮动 5 分钟，以容忍 launchd 启动延迟：
+`scripts/local_reminder.sh` 会在同一时点依次发送原有股息率网格提醒和 512890 RSI6 提醒。使用 macOS `launchd` 每天 **09:00**、**09:30**、**14:00** 和 **15:05** 运行；脚本为每个时段保留有限的延迟窗口，以容忍电脑唤醒或系统负载造成的启动延迟，同时避免任意时间手动运行时误发：
 
 双击 `strategy/start_local_reminder.command` 安装或更新任务；安装器按当前仓库位置生成 launchd 配置，不依赖旧工程目录，也不会立即推送。首次运行若未找到凭据，会生成 `.env.local` 模板，填入企业微信 Webhook 后再次双击即可。提醒优先读取本目录 `.env.local`，否则读取 `~/Library/Application Support/dividend-grid-reminder/.env.local`。
 

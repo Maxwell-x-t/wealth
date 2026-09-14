@@ -20,16 +20,18 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 hour="$(date +%H)"
 minute="$(date +%M)"
 current_minutes=$((10#$hour * 60 + 10#$minute))
-if (( current_minutes >= 535 && current_minutes <= 545 )); then
+# launchd can resume a calendar job several minutes late after sleep or load.
+# Keep each slot bounded so an accidental manual run still does not send a reminder.
+if (( current_minutes >= 510 && current_minutes < 555 )); then
   session="morning"
-elif (( current_minutes >= 565 && current_minutes <= 575 )); then
+elif (( current_minutes >= 555 && current_minutes < 600 )); then
   session="midday"
-elif (( current_minutes >= 835 && current_minutes <= 845 )); then
+elif (( current_minutes >= 810 && current_minutes < 870 )); then
   session="midday"
-elif (( current_minutes >= 900 && current_minutes <= 910 )); then
+elif (( current_minutes >= 870 && current_minutes <= 945 )); then
   session="close"
 else
-  print -u2 "local_reminder.sh 只应在 09:00、09:30、14:00 或 15:05 的 ±5 分钟内运行，当前 ${hour}:${minute}"
+  print -u2 "local_reminder.sh 只应在 09:00、09:30、14:00 或 15:05 的延迟窗口内运行，当前 ${hour}:${minute}"
   exit 2
 fi
 
