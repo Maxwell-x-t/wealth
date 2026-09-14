@@ -263,7 +263,7 @@ def build_wealth_forecast(
     if use_inflation:
         inflation_rate = max(0.0, inflation_pct_value) / 100.0
 
-    metrics = compute_dashboard_metrics(db, config)
+    metrics = compute_dashboard_metrics(db, config, scope="index")
     start_assets = float(metrics["total_assets_cny"])
     start_principal = float(metrics["net_investment_cny"])
     today = date.today()

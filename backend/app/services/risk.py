@@ -107,7 +107,7 @@ def build_risk_simulation(
     recovery_return_pct: Optional[float] = None,
     horizon_years: Optional[int] = None,
 ) -> dict:
-    metrics = compute_dashboard_metrics(db, config)
+    metrics = compute_dashboard_metrics(db, config, scope="index")
     current_assets = float(metrics["total_assets_cny"])
     current_principal = float(metrics["net_investment_cny"])
     annual_contribution = _estimate_annual_contribution(db, config)

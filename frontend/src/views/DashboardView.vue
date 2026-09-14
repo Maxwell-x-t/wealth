@@ -25,8 +25,8 @@ async function loadData() {
   loading.value = true
   try {
     const [dashboard, chartHistory] = await Promise.all([
-      getDashboard(),
-      getDashboardHistory(),
+      getDashboard('index'),
+      getDashboardHistory('index'),
     ])
     summary.value = dashboard
     history.value = chartHistory
@@ -157,7 +157,7 @@ const assetChartOption = computed(() => {
 const allocationChartOption = computed(() => {
   if (!summary.value?.category_allocations?.length) return null
   const data = summary.value.category_allocations
-    .filter((item) => item.current_pct > 0)
+    .filter((item) => (item.category === 'nasdaq' || item.category === 'sp500') && item.current_pct > 0)
     .map((item) => ({ name: item.label, value: item.current_pct }))
   return {
     backgroundColor: 'transparent',
@@ -182,10 +182,8 @@ const accountIndexSections = computed(() => {
       account,
       items: items.filter(
         (item) =>
-          item.category === 'nasdaq'
-          || item.category === 'sp500'
-          || item.target_pct > 0
-          || item.current_pct > 0,
+          (item.category === 'nasdaq' || item.category === 'sp500')
+          && (item.target_pct > 0 || item.current_pct > 0),
       ),
     }))
     .filter((section) => section.items.length > 0)
@@ -219,20 +217,21 @@ const accountChartOption = computed(() => {
 
 <template>
   <NSpin :show="loading">
-    <h1 class="page-title">投资总览</h1>
+    <h1 class="page-title">指数总览</h1>
+    <p class="page-subtitle">标普与纳指配置；现金及红利持仓归入红利账户</p>
 
     <template v-if="summary">
       <div class="metric-grid">
         <div class="metric-card">
-          <div class="metric-label">总资产</div>
+          <div class="metric-label">指数总资产</div>
           <div class="metric-value">{{ formatMoney(summary.total_assets_cny) }}</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">净投入</div>
+          <div class="metric-label">指数净投入</div>
           <div class="metric-value">{{ formatMoney(summary.net_investment_cny) }}</div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">总收益</div>
+          <div class="metric-label">指数总收益</div>
           <div class="metric-value" :class="signedClass(summary.total_return_cny)">
             {{ formatMoney(summary.total_return_cny) }}
           </div>
@@ -241,7 +240,7 @@ const accountChartOption = computed(() => {
           </div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">XIRR / 年化</div>
+          <div class="metric-label">指数 XIRR / 年化</div>
           <div class="metric-value" :class="signedClass(summary.xirr)">
             {{ formatPercent(summary.xirr) }}
           </div>
@@ -371,7 +370,7 @@ const accountChartOption = computed(() => {
           <div v-else class="empty-chart">更新行情后可查看资产曲线</div>
         </div>
         <div class="panel">
-          <h3>资产配置</h3>
+          <h3>指数配置</h3>
           <VChart v-if="allocationChartOption" :option="allocationChartOption" style="height: 280px" />
           <div v-else class="empty-chart">暂无持仓数据</div>
         </div>
@@ -379,10 +378,10 @@ const accountChartOption = computed(() => {
 
       <div class="panel-grid" style="margin-bottom: 16px">
         <div class="panel">
-          <h3>全仓目标比例</h3>
+          <h3>指数目标比例</h3>
           <div class="allocation-list">
             <div
-              v-for="item in summary.category_allocations"
+              v-for="item in summary.category_allocations.filter((item) => item.category === 'nasdaq' || item.category === 'sp500')"
               :key="item.category"
               class="allocation-item"
             >
@@ -413,6 +412,12 @@ const accountChartOption = computed(() => {
 </template>
 
 <style scoped>
+.page-subtitle {
+  margin: -10px 0 18px;
+  color: #8b98a5;
+  font-size: 13px;
+}
+
 .empty-chart {
   height: 280px;
   display: flex;

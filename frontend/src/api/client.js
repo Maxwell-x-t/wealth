@@ -13,8 +13,10 @@ export const deleteCashEvent = (id, eventId) => client.delete(`/strategy/account
 export const getStrategySignals = id => client.get(`/strategy/accounts/${id}/signals`).then(r => r.data)
 export const refreshStrategySignals = id => client.post(`/strategy/accounts/${id}/signals`, null, { timeout: 260000 }).then(r => r.data)
 
-export const getDashboard = () => client.get('/dashboard').then((r) => r.data)
-export const getDashboardHistory = () => client.get('/dashboard/history').then((r) => r.data)
+export const getDashboard = (scope = 'index') =>
+  client.get('/dashboard', { params: { scope } }).then((r) => r.data)
+export const getDashboardHistory = (scope = 'index') =>
+  client.get('/dashboard/history', { params: { scope } }).then((r) => r.data)
 export const getConfig = () => client.get('/config').then((r) => r.data)
 export const updateConfig = (data) => client.put('/config', data).then((r) => r.data)
 

@@ -161,8 +161,6 @@ def test_live_sqlite_adapter(client, tmp_path):
 
 def test_dashboard_and_legacy_cashflows(client):
     from app.models.models import PriceSnapshot
-    from app.services.holdings import InstrumentState
-    from decimal import Decimal
     with SessionLocal() as db:
         account = db.query(Account).filter_by(name="香港").one()
         instrument = db.query(Instrument).filter_by(account_id=account.id).first()
@@ -173,7 +171,11 @@ def test_dashboard_and_legacy_cashflows(client):
         assert sum(compute_cashflows(db)[1]) == -15407
     response = client.get("/api/dashboard")
     assert response.status_code == 200, response.text
-    assert response.json()["total_assets_cny"] > 14000
+    dashboard = response.json()
+    assert dashboard["total_assets_cny"] == 1440
+    assert all(item["category"] in {"nasdaq", "sp500"} for item in dashboard["holdings"])
+    assert all(item["account_name"] != "红利策略" for item in dashboard["holdings"])
+    assert client.get("/api/dashboard?scope=all").json()["total_assets_cny"] > 14000
 
 
 def test_concurrent_buys_cannot_spend_same_cash(client):

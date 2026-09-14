@@ -459,8 +459,8 @@ async function analyze() {
   <main class="strategy-page">
     <header class="strategy-heading">
       <div>
-        <p class="section-label">WEALTH / ACCOUNT</p>
-        <h1>策略账户</h1>
+        <p class="section-label">WEALTH / DIVIDEND ACCOUNT</p>
+        <h1>红利账户</h1>
         <div class="account-meta">
           <NSelect
             v-if="accounts.length > 1"
@@ -565,7 +565,8 @@ async function analyze() {
             >
           </div>
         </section>
-        <section class="limit-band">
+        <p class="strategy-config-title">红利策略配置 · 独立于指数配置</p>
+        <section class="limit-band" aria-label="红利策略配置">
           <div>
             <span>现金底线</span><b>{{ account.min_cash_pct }}%</b>
           </div>
@@ -899,6 +900,12 @@ h1 {
   gap: 16px;
   padding: 16px 0;
   border-block: 1px solid #363d40;
+}
+.strategy-config-title {
+  margin: 18px 0 0;
+  color: #e1e6e4;
+  font-size: 13px;
+  font-weight: 600;
 }
 .limit-band div {
   display: flex;

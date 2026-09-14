@@ -24,8 +24,24 @@ from app.services.fx_rate import get_usd_cny_rate_as_of
 from app.services.investment_plan import generate_investment_plans
 from app.services.plan_phase import build_phase_investment_summary
 
+INDEX_CATEGORIES = {"nasdaq", "sp500"}
 
-def compute_cashflows(db: Session, usd_cny_rate: float = 7.2) -> tuple[list[date], list[float]]:
+
+def _scope_targets(targets: dict, scope: str) -> dict:
+    if scope != "index":
+        return targets
+    scoped = dict(targets)
+    for key in ("a_share", "gold", "cash", "qdii"):
+        scoped[key] = 0
+    return scoped
+
+
+def compute_cashflows(
+    db: Session,
+    usd_cny_rate: float = 7.2,
+    *,
+    scope: str = "all",
+) -> tuple[list[date], list[float]]:
     transactions = (
         db.query(Transaction)
         .order_by(Transaction.trade_date.asc(), Transaction.id.asc())
@@ -40,6 +56,8 @@ def compute_cashflows(db: Session, usd_cny_rate: float = 7.2) -> tuple[list[date
         amount = _to_decimal(tx.amount) if tx.amount else _to_decimal(tx.quantity) * _to_decimal(tx.price)
         fee = _to_decimal(tx.fee)
         instrument = db.query(Instrument).filter(Instrument.id == tx.instrument_id).one()
+        if scope == "index" and instrument.category not in INDEX_CATEGORIES:
+            continue
         rate = _to_decimal(tx.exchange_rate)
         cny_amount = convert_transaction_to_cny(amount, instrument.currency, rate)
         cny_fee = convert_transaction_to_cny(fee, instrument.currency, rate)
@@ -51,19 +69,27 @@ def compute_cashflows(db: Session, usd_cny_rate: float = 7.2) -> tuple[list[date
 
         flows_by_date[tx.trade_date] = flows_by_date.get(tx.trade_date, Decimal("0")) + cash
 
-    for flow_date, cash in external_flows(db):
-        flows_by_date[flow_date] = flows_by_date.get(flow_date, Decimal("0")) + cash
+    if scope != "index":
+        for flow_date, cash in external_flows(db):
+            flows_by_date[flow_date] = flows_by_date.get(flow_date, Decimal("0")) + cash
     dates = sorted(flows_by_date.keys())
     amounts = [float(flows_by_date[d]) for d in dates]
     return dates, amounts
 
 
-def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
+def compute_dashboard_metrics(db: Session, targets: dict, *, scope: str = "all") -> dict:
     usd_cny_rate = float(targets.get("usd_cny_rate", 7.2))
-    holdings = build_holdings(db, usd_cny_rate=usd_cny_rate)
+    managed = {row.account_id for row in db.query(StrategyAccount)}
+    scoped_targets = _scope_targets(targets, scope)
+    holdings = build_holdings(
+        db,
+        usd_cny_rate=usd_cny_rate,
+        categories=INDEX_CATEGORIES if scope == "index" else None,
+        exclude_account_ids=managed if scope == "index" else None,
+        include_managed_cash=scope != "index",
+    )
 
     transactions = db.query(Transaction).all()
-    managed = {row.account_id for row in db.query(StrategyAccount)}
     buy_total = Decimal("0")
     sell_total = Decimal("0")
 
@@ -73,6 +99,8 @@ def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
         amount = _to_decimal(tx.amount) if tx.amount else _to_decimal(tx.quantity) * _to_decimal(tx.price)
         fee = _to_decimal(tx.fee)
         instrument = db.query(Instrument).filter(Instrument.id == tx.instrument_id).one()
+        if scope == "index" and instrument.category not in INDEX_CATEGORIES:
+            continue
         rate = _to_decimal(tx.exchange_rate)
         cny_amount = convert_transaction_to_cny(amount, instrument.currency, rate)
         cny_fee = convert_transaction_to_cny(fee, instrument.currency, rate)
@@ -82,11 +110,12 @@ def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
         else:
             sell_total += cny_amount - cny_fee
 
-    for _, cash in external_flows(db):
-        if cash < 0:
-            buy_total -= cash
-        else:
-            sell_total += cash
+    if scope != "index":
+        for _, cash in external_flows(db):
+            if cash < 0:
+                buy_total -= cash
+            else:
+                sell_total += cash
     total_assets_cny = Decimal(str(sum(h["market_value_cny"] for h in holdings)))
     net_investment_cny = buy_total - sell_total
     total_return_cny = total_assets_cny + sell_total - buy_total
@@ -98,10 +127,12 @@ def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
 
     unrealized_pnl_cny = Decimal(str(sum(h["unrealized_pnl_cny"] for h in holdings)))
     realized_pnl_cny = Decimal(str(sum(h["realized_pnl_cny"] for h in holdings)))
-    realized_pnl_cny += sum(
-        _to_decimal(event.amount) * (1 if event.kind == "dividend" else -1)
-        for event in db.query(CashEvent) if event.account_id in managed and event.kind in ("dividend", "fee")
-    )
+    if scope != "index":
+        realized_pnl_cny += sum(
+            _to_decimal(event.amount) * (1 if event.kind == "dividend" else -1)
+            for event in db.query(CashEvent)
+            if event.account_id in managed and event.kind in ("dividend", "fee")
+        )
 
     mainland_assets_cny = Decimal("0")
     hk_assets_cny = Decimal("0")
@@ -118,19 +149,19 @@ def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
             cny_assets += Decimal(str(holding["market_value"]))
 
     target_map = {
-        "nasdaq": float(targets.get("nasdaq", 70)),
-        "sp500": float(targets.get("sp500", 30)),
-        "a_share": float(targets.get("a_share", 0)),
-        "gold": float(targets.get("gold", 0)),
-        "cash": float(targets.get("cash", 0)),
-        "qdii": float(targets.get("qdii", 0)),
+        "nasdaq": float(scoped_targets.get("nasdaq", 70)),
+        "sp500": float(scoped_targets.get("sp500", 30)),
+        "a_share": float(scoped_targets.get("a_share", 0)),
+        "gold": float(scoped_targets.get("gold", 0)),
+        "cash": float(scoped_targets.get("cash", 0)),
+        "qdii": float(scoped_targets.get("qdii", 0)),
     }
     category_allocations = build_category_allocations(
         holdings,
         target_map,
         float(total_assets_cny),
     )
-    account_category_allocations = build_account_category_allocations(targets, holdings)
+    account_category_allocations = build_account_category_allocations(scoped_targets, holdings)
 
     rebalance_suggestion = None
     asset_allocs = [c for c in category_allocations if c["target_pct"] > 0 or c["current_pct"] > 0]
@@ -158,13 +189,13 @@ def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
         "holdings": holdings,
     }
 
-    rebalance = compute_rebalance_detail(db, targets, metrics)
+    rebalance = compute_rebalance_detail(db, scoped_targets, metrics)
     metrics["rebalance_suggestion"] = rebalance.get("summary") or rebalance_suggestion
     metrics["rebalance"] = rebalance
 
     xirr_value = None
     annualized_return = None
-    flow_dates, flow_amounts = compute_cashflows(db, usd_cny_rate)
+    flow_dates, flow_amounts = compute_cashflows(db, usd_cny_rate, scope=scope)
     if flow_dates and total_assets_cny > 0:
         dates = flow_dates + [date.today()]
         amounts = flow_amounts + [float(total_assets_cny)]
@@ -180,15 +211,15 @@ def compute_dashboard_metrics(db: Session, targets: dict) -> dict:
     metrics["xirr"] = xirr_value
     metrics["annualized_return"] = annualized_return
 
-    plans = generate_investment_plans(db, targets, metrics_for_rebalance=False)
+    plans = generate_investment_plans(db, scoped_targets, metrics_for_rebalance=False)
     metrics["phase_investment"] = build_phase_investment_summary(
-        db, targets, plans, date.today(), usd_cny_rate
+        db, scoped_targets, plans, date.today(), usd_cny_rate, scope=scope
     )
 
     return metrics
 
 
-def _net_investment_cny_as_of(db: Session, as_of: date) -> Decimal:
+def _net_investment_cny_as_of(db: Session, as_of: date, *, scope: str = "all") -> Decimal:
     transactions = db.query(Transaction).filter(Transaction.trade_date <= as_of).all()
     managed = {row.account_id for row in db.query(StrategyAccount)}
     buy_total = Decimal("0")
@@ -200,6 +231,8 @@ def _net_investment_cny_as_of(db: Session, as_of: date) -> Decimal:
         amount = _to_decimal(tx.amount) if tx.amount else _to_decimal(tx.quantity) * _to_decimal(tx.price)
         fee = _to_decimal(tx.fee)
         instrument = db.query(Instrument).filter(Instrument.id == tx.instrument_id).one()
+        if scope == "index" and instrument.category not in INDEX_CATEGORIES:
+            continue
         rate = _to_decimal(tx.exchange_rate)
         cny_amount = convert_transaction_to_cny(amount, instrument.currency, rate)
         cny_fee = convert_transaction_to_cny(fee, instrument.currency, rate)
@@ -208,13 +241,25 @@ def _net_investment_cny_as_of(db: Session, as_of: date) -> Decimal:
         else:
             sell_total += cny_amount - cny_fee
 
-    return buy_total - sell_total - sum(cash for _, cash in external_flows(db, as_of))
+    external = sum(cash for _, cash in external_flows(db, as_of)) if scope != "index" else Decimal("0")
+    return buy_total - sell_total - external
 
 
-def build_asset_history(db: Session, usd_cny_rate: float = 7.2) -> list[dict]:
+def build_asset_history(db: Session, usd_cny_rate: float = 7.2, *, scope: str = "all") -> list[dict]:
     price_index = build_historical_price_index(db)
     if not price_index:
         return []
+
+    managed = {row.account_id for row in db.query(StrategyAccount)}
+    if scope == "index":
+        allowed_ids = {
+            instrument.id
+            for instrument in db.query(Instrument).filter(Instrument.is_active.is_(True)).all()
+            if instrument.category in INDEX_CATEGORIES and instrument.account_id not in managed
+        }
+        price_index = {instrument_id: series for instrument_id, series in price_index.items() if instrument_id in allowed_ids}
+        if not price_index:
+            return []
 
     snapshot_dates = sorted({snap_date for series in price_index.values() for snap_date, _ in series})
     today = date.today()
@@ -225,8 +270,16 @@ def build_asset_history(db: Session, usd_cny_rate: float = 7.2) -> list[dict]:
     fallback_rate = _to_decimal(usd_cny_rate)
     for snap_date in snapshot_dates:
         fx_rate = _to_decimal(get_usd_cny_rate_as_of(db, snap_date, float(fallback_rate)))
-        total_assets = total_assets_cny_as_of(db, snap_date, price_index, fx_rate)
-        net_investment = _net_investment_cny_as_of(db, snap_date)
+        total_assets = total_assets_cny_as_of(
+            db,
+            snap_date,
+            price_index,
+            fx_rate,
+            categories=INDEX_CATEGORIES if scope == "index" else None,
+            exclude_account_ids=managed if scope == "index" else None,
+            include_managed_cash=scope != "index",
+        )
+        net_investment = _net_investment_cny_as_of(db, snap_date, scope=scope)
         total_return = total_assets - net_investment
         history.append(
             {

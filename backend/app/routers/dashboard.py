@@ -1,5 +1,7 @@
 from datetime import date
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -40,10 +42,10 @@ def _config_to_schema(config: dict) -> AllocationTarget:
     return AllocationTarget(
         nasdaq=float(config.get("nasdaq", 70)),
         sp500=float(config.get("sp500", 30)),
-        a_share=float(config.get("a_share", 0)),
-        gold=float(config.get("gold", 0)),
-        cash=float(config.get("cash", 0)),
-        qdii=float(config.get("qdii", 0)),
+        a_share=0,
+        gold=0,
+        cash=0,
+        qdii=0,
         mainland=float(config.get("mainland", 60)),
         hk=float(config.get("hk", 40)),
         usd_cny_rate=float(config.get("usd_cny_rate", 7.2)),
@@ -121,6 +123,9 @@ DEPRECATED_ACCOUNT_PLAN_KEYS = (
 
 def _schema_to_config(payload: AllocationTarget) -> dict:
     data = payload.model_dump()
+    # The ordinary configuration owns only the two index buckets.
+    for key in ("a_share", "gold", "cash", "qdii"):
+        data[key] = 0
     date_fields = ("plan_start_date",)
     write_only_dates = ("dca_effective_from",)
     for key in date_fields:
@@ -152,16 +157,16 @@ def _schema_to_config(payload: AllocationTarget) -> dict:
 
 
 @router.get("/api/dashboard", response_model=DashboardSummary)
-def get_dashboard(db: Session = Depends(get_db)):
+def get_dashboard(scope: Literal["index", "all"] = "index", db: Session = Depends(get_db)):
     config = get_config_map(db)
     config["usd_cny_rate"] = get_latest_usd_cny_rate(db)
-    return compute_dashboard_metrics(db, config)
+    return compute_dashboard_metrics(db, config, scope=scope)
 
 
 @router.get("/api/dashboard/history", response_model=list[AssetSnapshotPoint])
-def get_dashboard_history(db: Session = Depends(get_db)):
+def get_dashboard_history(scope: Literal["index", "all"] = "index", db: Session = Depends(get_db)):
     usd_cny_rate = get_latest_usd_cny_rate(db)
-    return build_asset_history(db, usd_cny_rate=usd_cny_rate)
+    return build_asset_history(db, usd_cny_rate=usd_cny_rate, scope=scope)
 
 
 @router.get("/api/config", response_model=AllocationTarget)
@@ -174,14 +179,11 @@ def get_config(db: Session = Depends(get_db)):
 
 @router.put("/api/config", response_model=AllocationTarget)
 def update_config(payload: AllocationTarget, db: Session = Depends(get_db)):
-    asset_total = round(
-        payload.nasdaq + payload.sp500 + payload.a_share + payload.gold + payload.cash + payload.qdii,
-        2,
-    )
+    asset_total = round(payload.nasdaq + payload.sp500, 2)
     if asset_total != 100:
         raise HTTPException(
             status_code=400,
-            detail="纳指、标普、A股、黄金、现金、QDII 比例之和必须为 100",
+            detail="指数配置中纳指与标普比例之和必须为 100",
         )
     if round(payload.mainland + payload.hk, 2) != 100:
         raise HTTPException(status_code=400, detail="大陆与香港比例之和必须为 100")

@@ -141,12 +141,21 @@ def total_assets_cny_as_of(
     as_of: date,
     price_index: dict[int, list[tuple[date, D]]],
     usd_cny_rate: D,
+    *,
+    categories: set[str] | None = None,
+    exclude_account_ids: set[int] | None = None,
+    include_managed_cash: bool = True,
 ) -> D:
     instruments = db.query(Instrument).filter(Instrument.is_active.is_(True)).all()
+    exclude_account_ids = exclude_account_ids or set()
     states = compute_instrument_states(db, as_of=as_of)
     total = D("0")
 
     for instrument in instruments:
+        if categories is not None and instrument.category not in categories:
+            continue
+        if instrument.account_id in exclude_account_ids:
+            continue
         state = states.get(instrument.id)
         if not state or state.quantity <= 0:
             continue
@@ -156,8 +165,10 @@ def total_assets_cny_as_of(
         market_value = (state.quantity * price).quantize(TWO)
         total += convert_market_to_cny(market_value, instrument.currency, usd_cny_rate)
 
-    from app.services.ledger import managed_cash
-    return (total + sum(cash for _, cash in managed_cash(db, as_of))).quantize(TWO)
+    if include_managed_cash:
+        from app.services.ledger import managed_cash
+        total += sum(cash for account, cash in managed_cash(db, as_of) if account.id not in exclude_account_ids)
+    return total.quantize(TWO)
 
 
 def get_latest_prices(db: Session) -> dict[int, D]:
@@ -220,6 +231,10 @@ def convert_to_cny(amount: D, currency: str, exchange_rate: D, usd_cny_rate: D) 
 def build_holdings(
     db: Session,
     usd_cny_rate: float = 7.2,
+    *,
+    categories: set[str] | None = None,
+    exclude_account_ids: set[int] | None = None,
+    include_managed_cash: bool = True,
 ) -> list[dict]:
     instruments = (
         db.query(Instrument)
@@ -229,9 +244,14 @@ def build_holdings(
     states = compute_instrument_states(db)
     latest_quotes = get_latest_quotes(db)
     usd_rate = _to_decimal(usd_cny_rate)
+    exclude_account_ids = exclude_account_ids or set()
 
     holdings: list[dict] = []
     for instrument in instruments:
+        if categories is not None and instrument.category not in categories:
+            continue
+        if instrument.account_id in exclude_account_ids:
+            continue
         state = states.get(
             instrument.id,
             InstrumentState(instrument.id, D("0"), D("0"), D("0")),
@@ -278,13 +298,16 @@ def build_holdings(
             }
         )
 
-    from app.services.ledger import managed_cash
-    for account, cash in managed_cash(db):
-        holdings.append(dict(instrument_id=-account.id, code="CASH", name="可用现金", category="cash",
-            account_id=account.id, account_name=account.name, currency="CNY", quantity=float(cash),
-            avg_cost=1, total_cost=float(cash), current_price=1, market_value=float(cash),
-            market_value_cny=float(cash), unrealized_pnl=0, unrealized_pnl_cny=0,
-            unrealized_pnl_rate=0, realized_pnl=0, realized_pnl_cny=0, basis_label="账户余额"))
+    if include_managed_cash:
+        from app.services.ledger import managed_cash
+        for account, cash in managed_cash(db):
+            if account.id in exclude_account_ids:
+                continue
+            holdings.append(dict(instrument_id=-account.id, code="CASH", name="可用现金", category="cash",
+                account_id=account.id, account_name=account.name, currency="CNY", quantity=float(cash),
+                avg_cost=1, total_cost=float(cash), current_price=1, market_value=float(cash),
+                market_value_cny=float(cash), unrealized_pnl=0, unrealized_pnl_cny=0,
+                unrealized_pnl_rate=0, realized_pnl=0, realized_pnl_cny=0, basis_label="账户余额"))
     total_assets_cny = sum(h["market_value_cny"] for h in holdings) or 0.0
     for holding in holdings:
         holding["weight"] = (

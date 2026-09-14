@@ -7,11 +7,12 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from app.database import engine
-from app.models.models import Transaction
+from app.models.models import StrategyAccount, Transaction
 from app.services.account_plan import month_index_for_date, phase_for_month_index, resolve_account_settings
 from app.services.holdings import convert_transaction_to_cny, _to_decimal
 
 ACCOUNT_CURRENCY = {"大陆": "CNY", "香港": "USD"}
+INDEX_CATEGORIES = {"nasdaq", "sp500"}
 
 
 def infer_plan_phase(trade_date: date, config: dict, account_name: str = "大陆") -> str:
@@ -49,13 +50,26 @@ def tx_amount_native(tx: Transaction) -> float:
     return float(amount + fee)
 
 
-def compute_phase_investment(db: Session, config: dict, usd_cny_rate: float) -> dict:
+def compute_phase_investment(
+    db: Session,
+    config: dict,
+    usd_cny_rate: float,
+    *,
+    scope: str = "all",
+) -> dict:
     building_cny = 0.0
     dca_cny = 0.0
     other_cny = 0.0
 
     rows = db.query(Transaction).filter(Transaction.side == "buy").all()
+    managed = {row.account_id for row in db.query(StrategyAccount)} if scope == "index" else set()
     for tx in rows:
+        if scope == "index" and (
+            tx.account_id in managed
+            or not tx.instrument
+            or tx.instrument.category not in INDEX_CATEGORIES
+        ):
+            continue
         amount = tx_amount_cny(tx, usd_cny_rate)
         phase = tx_effective_phase(tx, config)
         if phase == "building":
@@ -140,9 +154,11 @@ def build_phase_investment_summary(
     plans: list[dict],
     today: date,
     usd_cny_rate: float,
+    *,
+    scope: str = "all",
 ) -> dict:
     plan_stats = compute_phase_plan_stats(plans, today)
-    tx_stats = compute_phase_investment(db, config, usd_cny_rate)
+    tx_stats = compute_phase_investment(db, config, usd_cny_rate, scope=scope)
     return {**tx_stats, **plan_stats}
 
 

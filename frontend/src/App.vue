@@ -18,8 +18,8 @@ const router = useRouter()
 const collapsed = ref(false)
 
 const menuOptions = [
-  { label: () => h(RouterLink, { to: '/strategy' }, { default: () => '策略账户' }), key: 'strategy' },
-  { label: () => h(RouterLink, { to: '/' }, { default: () => '总览' }), key: 'dashboard' },
+  { label: () => h(RouterLink, { to: '/strategy' }, { default: () => '红利账户' }), key: 'strategy' },
+  { label: () => h(RouterLink, { to: '/' }, { default: () => '指数总览' }), key: 'dashboard' },
   { label: () => h(RouterLink, { to: '/plans' }, { default: () => '投资计划' }), key: 'plans' },
   { label: () => h(RouterLink, { to: '/forecast' }, { default: () => '财富预测' }), key: 'forecast' },
   { label: () => h(RouterLink, { to: '/backtest' }, { default: () => '历史回测' }), key: 'backtest' },
@@ -28,7 +28,7 @@ const menuOptions = [
   { label: () => h(RouterLink, { to: '/instruments' }, { default: () => '品种管理' }), key: 'instruments' },
   { label: () => h(RouterLink, { to: '/prices' }, { default: () => '行情更新' }), key: 'prices' },
   { label: () => h(RouterLink, { to: '/exchange-rates' }, { default: () => '汇率更新' }), key: 'exchange-rates' },
-  { label: () => h(RouterLink, { to: '/config' }, { default: () => '参数配置' }), key: 'config' },
+  { label: () => h(RouterLink, { to: '/config' }, { default: () => '指数配置' }), key: 'config' },
 ]
 const icons = [Wallet, Gauge, CalendarDays, TrendingUp, ChartNoAxesCombined, ClipboardList, List, Landmark, Activity, Coins, Settings]
 menuOptions.forEach((option, i) => { option.icon = () => h(icons[i], { size: 18 }) })

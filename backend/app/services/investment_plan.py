@@ -1025,7 +1025,7 @@ def generate_investment_plans(
     if rebalance_enabled and metrics_for_rebalance:
         from app.services.returns import compute_dashboard_metrics
 
-        metrics = compute_dashboard_metrics(db, config)
+        metrics = compute_dashboard_metrics(db, config, scope="index")
 
     global_category_allocations = metrics.get("category_allocations") or [] if metrics else []
     category_weights = _default_dca_category_weights(config, "mainland")
@@ -1221,7 +1221,7 @@ def build_plan_overview(db: Session, config: dict) -> dict:
     history.sort(key=lambda item: (item["plan_date"], item["account"], item["category"]), reverse=True)
     history = history[:100]
 
-    plan_stats = build_phase_investment_summary(db, config, plans, today, usd_cny_rate)
+    plan_stats = build_phase_investment_summary(db, config, plans, today, usd_cny_rate, scope="index")
     phase_investment = plan_stats
 
     account_summaries = []
@@ -1241,7 +1241,7 @@ def build_plan_overview(db: Session, config: dict) -> dict:
     if _is_truthy_config(config.get("plan_rebalance_enabled", "1")):
         from app.services.returns import compute_dashboard_metrics
 
-        metrics = compute_dashboard_metrics(db, config)
+        metrics = compute_dashboard_metrics(db, config, scope="index")
         _, _, dca_tilt_active, _ = _compute_dca_category_weights(
             config,
             metrics.get("category_allocations") or [],

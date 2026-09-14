@@ -39,7 +39,7 @@ def _load_checks(db: Session, year: int) -> Dict[str, bool]:
 
 def _build_hints(db: Session, config: dict) -> List[dict]:
     overview = build_plan_overview(db, config)
-    metrics = compute_dashboard_metrics(db, config)
+    metrics = compute_dashboard_metrics(db, config, scope="index")
     hints = []
 
     rate = overview.get("dca_execution_rate", 0)

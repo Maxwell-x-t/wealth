@@ -106,6 +106,11 @@ async function loadData() {
   try {
     const [config, status, indexStatus] = await Promise.all([getConfig(), getSyncStatus(), getIndexDataStatus()])
     Object.assign(form, config)
+    // Legacy asset buckets belong to the dividend account and are not part of index configuration.
+    form.a_share = 0
+    form.gold = 0
+    form.cash = 0
+    form.qdii = 0
     normalizeAccountIndexTargets('mainland')
     normalizeAccountIndexTargets('hk')
     loadedDcaAmounts.dca_monthly_amount = config.dca_monthly_amount
@@ -131,6 +136,10 @@ const OPTIONAL_NUMERIC_KEYS = [
 
 function buildConfigPayload() {
   const payload = { ...form }
+  payload.a_share = 0
+  payload.gold = 0
+  payload.cash = 0
+  payload.qdii = 0
   for (const key of OPTIONAL_NUMERIC_KEYS) {
     if (payload[key] === '' || payload[key] === undefined) {
       payload[key] = null
@@ -195,9 +204,9 @@ function validateAccountIndexTargets(accountKey, label) {
 }
 
 function validateForm() {
-  const assetTotal = Math.round(form.nasdaq + form.sp500 + form.a_share + form.gold + form.cash + form.qdii)
+  const assetTotal = Math.round(form.nasdaq + form.sp500)
   if (assetTotal !== 100) {
-    message.error('纳指、标普、A股、黄金、现金、QDII 比例之和必须为 100')
+    message.error('指数配置中纳指与标普比例之和必须为 100')
     return false
   }
   if (Math.round(form.mainland + form.hk) !== 100) {
@@ -299,13 +308,13 @@ async function handleRefreshIndexData() {
 
 <template>
   <NSpin :show="loading">
-    <h1 class="page-title">参数配置</h1>
+    <h1 class="page-title">指数配置</h1>
 
     <div class="panel" style="max-width: 640px">
       <NForm label-placement="left" label-width="140">
-        <NDivider title-placement="left">资产配置目标（全仓合计 100%）</NDivider>
+        <NDivider title-placement="left">指数配置目标（纳指 + 标普 = 100%）</NDivider>
         <p class="hint-text section-hint">
-          统计大陆与香港全部持仓，用于 Dashboard 偏离度与定投倾斜判断。
+          首页总览、投资计划、预测和风险分析只使用标普与纳指；红利账户的现金和持仓单独核算。
         </p>
         <NFormItem label="纳指">
           <NInputNumber v-model:value="form.nasdaq" :min="0" :max="100" style="width: 100%" />
@@ -313,19 +322,6 @@ async function handleRefreshIndexData() {
         <NFormItem label="标普">
           <NInputNumber v-model:value="form.sp500" :min="0" :max="100" style="width: 100%" />
         </NFormItem>
-        <NFormItem label="A股">
-          <NInputNumber v-model:value="form.a_share" :min="0" :max="100" style="width: 100%" />
-        </NFormItem>
-        <NFormItem label="黄金">
-          <NInputNumber v-model:value="form.gold" :min="0" :max="100" style="width: 100%" />
-        </NFormItem>
-        <NFormItem label="现金">
-          <NInputNumber v-model:value="form.cash" :min="0" :max="100" style="width: 100%" />
-        </NFormItem>
-        <NFormItem label="QDII">
-          <NInputNumber v-model:value="form.qdii" :min="0" :max="100" style="width: 100%" />
-        </NFormItem>
-
         <NDivider title-placement="left">账户分布目标（合计 100%）</NDivider>
         <NFormItem label="大陆">
           <NInputNumber v-model:value="form.mainland" :min="0" :max="100" style="width: 100%" />
