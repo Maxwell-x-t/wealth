@@ -178,6 +178,16 @@ def test_dashboard_and_legacy_cashflows(client):
     assert client.get("/api/dashboard?scope=all").json()["total_assets_cny"] > 14000
 
 
+def test_strategy_buy_does_not_break_index_dashboard(client):
+    assert buy(client).status_code == 200
+    response = client.get("/api/dashboard")
+    assert response.status_code == 200, response.text
+    assert all(
+        item["account_name"] != "红利策略"
+        for item in response.json()["holdings"]
+    )
+
+
 def test_concurrent_buys_cannot_spend_same_cash(client):
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=2) as pool:

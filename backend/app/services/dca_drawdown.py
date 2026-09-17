@@ -75,6 +75,10 @@ def estimate_annual_crisis_used_cny(
         .all()
     )
     for tx in rows:
+        account_name = tx.account.name if tx.account else None
+        category = tx.instrument.category if tx.instrument else None
+        if account_name not in ("大陆", "香港") or category not in DCA_INDEX_CATEGORIES:
+            continue
         if tx_effective_phase(tx, config) == "dca":
             actual_dca += tx_amount_cny(tx, usd_cny_rate)
     return round(max(actual_dca - planned_through_month, 0.0), 2)

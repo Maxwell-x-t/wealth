@@ -17,6 +17,8 @@ INDEX_CATEGORIES = {"nasdaq", "sp500"}
 
 def infer_plan_phase(trade_date: date, config: dict, account_name: str = "大陆") -> str:
     """根据账户计划开始日、建仓月数与建仓目标总额推断交易所属阶段。"""
+    if account_name not in ACCOUNT_CURRENCY:
+        return "other"
     settings = resolve_account_settings(config, account_name)
     month_index = month_index_for_date(settings["plan_start"], trade_date)
     return phase_for_month_index(settings, month_index)
