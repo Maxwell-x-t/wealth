@@ -1,4 +1,4 @@
-"""行情数据源：以当前价格和已完成财年分红计算股息率。
+"""行情数据源：以当前价格、完整财年基准和已确认新方案计算股息率。
 
 - ManualDataSource：股息率来自命令行 / 调用方直接提供。
 - AkShareDataSource：默认走腾讯财经行情（免登录）。若设置环境变量
@@ -157,7 +157,7 @@ class AkShareDataSource:
 
     行情默认：腾讯财经 ``qt.gtimg.cn``（免登录，字段 64 = 股息率 TTM）。
     可选：环境变量 ``XQ_A_TOKEN`` / ``XUEQIU_TOKEN`` 时优先走雪球。
-    股息率不取行情里的 TTM 字段，改由东方财富分红明细按财年口径重算（见
+    股息率不取行情里的 TTM 字段，改由东方财富分红明细按统一方案口径重算（见
     ``dividends.CALIBER_RULE``），避免除息日漂移与分红节奏变化造成假信号。
     按代码缓存，get_yield / get_quality / get_dividend_snapshot 共用同一次请求。
     """
@@ -214,7 +214,7 @@ class AkShareDataSource:
         return kv
 
     def _snapshot(self, code: str):
-        """财年口径分红快照；分红明细不可用时抛 DividendUnavailable。"""
+        """统一口径分红快照；分红明细不可用时抛 DividendUnavailable。"""
         if code not in self._dividend_cache:
             try:
                 self._dividend_cache[code] = fiscal_dividend(

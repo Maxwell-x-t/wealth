@@ -1,6 +1,6 @@
 """股息率口径通用规则的回归测试。
 
-核心不变量：股息率按「财年口径」计算，与分红到账节奏解耦。
+核心不变量：股息率以完整财年为基准，确认的新方案按同周期替换，与到账节奏解耦。
 典型反面场景是「某年取消中期分红」——滚动 12 个月口径会因此机械跳水（假卖出信号），
 财年口径不会。这里同时锁住旧口径的跳水行为，防止未来有人改回 TTM。
 """
@@ -31,6 +31,13 @@ HAIER = [
 ]
 
 
+PING_AN_BANK = [
+    rec("2025-06-30", "2025-09-30", "2025-10-15", 0.236),
+    rec("2025-12-31", "2026-06-05", "2026-06-12", 0.360),
+    rec("2026-06-30", "2026-09-17", "2026-09-24", 0.249),
+]
+
+
 def rolling_365(records, window_end):
     """对照用的旧口径：过去 365 天内已除息的每股分红求和。"""
     end = date.fromisoformat(window_end)
@@ -53,14 +60,30 @@ def test_fiscal_caliber_survives_interim_dropping_out_of_window():
     assert rolling_365(HAIER, "2026-11-08") == pytest.approx(0.89151)
 
 
-def test_fiscal_caliber_switches_only_when_new_annual_is_implemented():
-    """新财年年度分红实施后才切换财年，切换时不留空档。"""
+def test_fiscal_caliber_switches_when_new_annual_plan_is_confirmed():
+    """新财年年度实施方案公告后切换，除息时不应再次变化。"""
     later = HAIER + [rec("2026-12-31", "2027-03-26", "2027-07-30", 1.15)]
-    assert fiscal_dividend(later, "2027-07-29").dps == pytest.approx(1.16071)
-    assert fiscal_dividend(later, "2027-07-29").fiscal_year == 2025
+    assert fiscal_dividend(later, "2027-03-25").dps == pytest.approx(1.16071)
+    confirmed = fiscal_dividend(later, "2027-03-26")
+    assert confirmed.dps == pytest.approx(1.15)
+    assert confirmed.fiscal_year == 2026
     updated = fiscal_dividend(later, "2027-07-30")
     assert updated.dps == pytest.approx(1.15)
     assert updated.fiscal_year == 2026
+
+
+def test_confirmed_interim_plan_replaces_previous_interim_from_announcement():
+    before = fiscal_dividend(PING_AN_BANK, "2026-09-16")
+    assert before.dps == pytest.approx(0.596)
+
+    announced = fiscal_dividend(PING_AN_BANK, "2026-09-17")
+    assert announced.dps == pytest.approx(0.609)
+    assert announced.fiscal_year == 2025
+    assert "FY2026-06-30" in announced.note
+
+    # 估值从实施公告日起更新，不必等待除息；除息日不应再重复计入。
+    assert fiscal_dividend(PING_AN_BANK, "2026-09-23").dps == pytest.approx(0.609)
+    assert fiscal_dividend(PING_AN_BANK, "2026-09-24").dps == pytest.approx(0.609)
 
 
 def test_fiscal_caliber_expires_when_no_annual_cycle_resolves():
@@ -90,7 +113,7 @@ def test_caliber_line_flags_partial_coverage():
     """部分标的缺财年口径时不能声称「本批统一」。"""
     line = _caliber_line(_result(_stock("海尔智家", 2025, 1.1607),
                                  _stock("缺数据的股", None, None)))
-    assert "本批统一 FY2025" in line
+    assert "本批统一基准 FY2025" in line
     assert "覆盖 1/2 只" in line
 
 

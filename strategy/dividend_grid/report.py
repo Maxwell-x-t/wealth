@@ -30,11 +30,10 @@ def _yield_cell(d: Decision) -> str:
 
 
 def _caliber_line(result: PortfolioResult) -> str:
-    """股息率口径说明：把通用规则与本批实际使用的财年显式打出来。
+    """股息率口径说明：把通用规则与本批实际使用的基准财年显式打出来。
 
     口径本身是通用规则（见 dividends.CALIBER_RULE）：不需要逐股配置、也没有有效期，
-    对所有标的一致适用。这里只做展示，避免把财年口径误读成滚动 12 个月，
-    进而误以为「取消中期分红」会让股息率机械跳水。
+    对所有标的一致适用。这里只做展示，避免把确认方案替换误读成滚动 12 个月。
     """
     usable = [d.stock for d in result.decisions
               if d.stock.data_available and d.stock.dividend_available and not d.stock.overridden]
@@ -51,11 +50,12 @@ def _caliber_line(result: PortfolioResult) -> str:
     if len(by_year) == 1:
         year = next(iter(by_year))
         span = f"，每股分红 {min(dps):.4f}~{max(dps):.4f} 元" if dps else ""
-        return (f"股息率口径：{CALIBER_NAME}（最近一个「年度分红已实施」的完整财年，含该财年中期分红；"
-                f"非滚动 12 个月）· 本批统一 FY{year}{span}{suffix}")
+        return (f"股息率口径：{CALIBER_NAME}（完整财年为基准，更新财年已确认同周期正分红"
+                f"替换旧周期；非滚动 12 个月）· 本批统一基准 FY{year}{span}{suffix}")
     parts = " | ".join(f"FY{y}：{'、'.join(names)}"
                        for y, names in sorted(by_year.items(), reverse=True))
-    return f"股息率口径：{CALIBER_NAME}（含该财年中期分红；非滚动 12 个月）· 分批财年 {parts}{suffix}"
+    return (f"股息率口径：{CALIBER_NAME}（确认方案按同周期替换；非滚动 12 个月）"
+            f"· 分批基准财年 {parts}{suffix}")
 
 
 def _average_yield(result: PortfolioResult) -> str:

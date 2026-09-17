@@ -18,11 +18,11 @@ def record(year, ex, cash, *, split=1, state="implemented", report=None):
             "state": state, "split": split}
 
 
-def test_fiscal_signal_combines_interim_and_annual_without_future_dividends():
+def test_fiscal_signal_replaces_old_interim_after_new_plan_is_confirmed():
     records = [record(2024, "2025-06-01", 0.5),
                record(2025, "2025-10-01", 0.2, report="2025-06-30"),
                record(2025, "2026-06-01", 0.6)]
-    assert fiscal_dividend(records, "2026-05-30").dps == 0.5
+    assert fiscal_dividend(records, "2026-05-30").dps == pytest.approx(0.7)
     assert fiscal_dividend(records, "2026-06-01").dps == pytest.approx(0.8)
 
 
