@@ -9,6 +9,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.models.models import Instrument, PriceSnapshot, StrategyAccount, Transaction
+from app.services.market_data import QuoteResult, apply_previous_iopv
 
 
 D = Decimal
@@ -178,6 +179,25 @@ def get_latest_prices(db: Session) -> dict[int, D]:
     }
 
 
+def previous_positive_iopv(db: Session, instrument_id: int, as_of: date) -> Optional[float]:
+    """同日优先，否则取 as_of 之前最近一次有效 IOPV。"""
+    rows = (
+        db.query(PriceSnapshot.iopv)
+        .filter(
+            PriceSnapshot.instrument_id == instrument_id,
+            PriceSnapshot.iopv.isnot(None),
+            PriceSnapshot.snapshot_date <= as_of,
+        )
+        .order_by(PriceSnapshot.snapshot_date.desc(), PriceSnapshot.id.desc())
+        .all()
+    )
+    for (value,) in rows:
+        number = float(value)
+        if number > 0:
+            return number
+    return None
+
+
 def get_latest_quotes(db: Session) -> dict[int, dict]:
     """最新行情：price 必有；大陆 ETF 可能带 iopv / premium_rate。"""
     instruments = db.query(Instrument).all()
@@ -192,14 +212,27 @@ def get_latest_quotes(db: Session) -> dict[int, dict]:
         )
         if not latest:
             continue
+        iopv = float(latest.iopv) if getattr(latest, "iopv", None) is not None else None
+        premium = (
+            float(latest.premium_rate)
+            if getattr(latest, "premium_rate", None) is not None
+            else None
+        )
+        filled = apply_previous_iopv(
+            QuoteResult(
+                price=float(latest.price),
+                snapshot_date=latest.snapshot_date,
+                iopv=iopv,
+                premium_rate=premium,
+            ),
+            None
+            if (iopv is not None and iopv > 0) or premium is not None
+            else previous_positive_iopv(db, instrument.id, latest.snapshot_date),
+        )
         quotes[instrument.id] = {
             "price": _to_decimal(latest.price),
-            "iopv": float(latest.iopv) if getattr(latest, "iopv", None) is not None else None,
-            "premium_rate": (
-                float(latest.premium_rate)
-                if getattr(latest, "premium_rate", None) is not None
-                else None
-            ),
+            "iopv": filled.iopv,
+            "premium_rate": filled.premium_rate,
         }
 
     return quotes

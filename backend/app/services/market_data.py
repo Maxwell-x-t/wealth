@@ -46,24 +46,99 @@ def _optional_float(value) -> Optional[float]:
     return number
 
 
+def _positive_float(value) -> Optional[float]:
+    number = _optional_float(value)
+    if number is None or number <= 0:
+        return None
+    return number
+
+
+def _nonzero_float(value) -> Optional[float]:
+    """东财未启用字段常填 0，0 视为缺失。"""
+    number = _optional_float(value)
+    if number is None or number == 0:
+        return None
+    return number
+
+
 def _premium_from_price_iopv(price: float, iopv: Optional[float]) -> Optional[float]:
     if iopv is None or iopv <= 0:
         return None
     return round((price - iopv) / iopv * 100, 2)
 
 
+def _etf_valuation(row: dict, price: float) -> tuple[Optional[float], Optional[float]]:
+    """从东财行情行解析 IOPV / 溢价率。优先 IOPV 现算，其次 f191、f402。"""
+    iopv = _positive_float(row.get("f441")) or _positive_float(row.get("f186"))
+    premium = _premium_from_price_iopv(price, iopv)
+    if premium is None:
+        quoted = _nonzero_float(row.get("f191"))
+        if quoted is not None:
+            premium = round(quoted, 2)
+        else:
+            discount = _nonzero_float(row.get("f402"))
+            if discount is not None:
+                premium = round(-discount, 2)
+        if iopv is None and premium is not None and premium > -100:
+            iopv = round(price / (1 + premium / 100), 6)
+    return iopv, premium
+
+
+def apply_previous_iopv(quote: QuoteResult, previous_iopv: Optional[float]) -> QuoteResult:
+    """新行情缺 IOPV 时沿用最近 IOPV，并用最新现价重算溢价。"""
+    iopv = quote.iopv if quote.iopv is not None and quote.iopv > 0 else None
+    if iopv is not None:
+        return QuoteResult(
+            price=quote.price,
+            snapshot_date=quote.snapshot_date,
+            iopv=iopv,
+            premium_rate=_premium_from_price_iopv(quote.price, iopv),
+        )
+    if quote.premium_rate is not None:
+        return quote
+    if previous_iopv is None or previous_iopv <= 0:
+        return quote
+    return QuoteResult(
+        price=quote.price,
+        snapshot_date=quote.snapshot_date,
+        iopv=previous_iopv,
+        premium_rate=_premium_from_price_iopv(quote.price, previous_iopv),
+    )
+
+
+def _merge_cn_quotes(base: Optional[QuoteResult], extra: QuoteResult) -> QuoteResult:
+    if base is None:
+        return extra
+    iopv = base.iopv if base.iopv is not None else extra.iopv
+    premium = base.premium_rate if base.premium_rate is not None else extra.premium_rate
+    if premium is None:
+        premium = _premium_from_price_iopv(base.price, iopv)
+    return QuoteResult(
+        price=base.price,
+        snapshot_date=base.snapshot_date,
+        iopv=iopv,
+        premium_rate=premium,
+    )
+
+
 def fetch_cn_price(code: str, timeout: float = 10.0) -> QuoteResult:
     """拉取大陆 ETF/股票最新价；ETF 优先带 IOPV/溢价率。"""
     errors = []
+    quote = None
     try:
-        return _fetch_cn_eastmoney_ulist(code, timeout)
+        quote = _fetch_cn_eastmoney_ulist(code, timeout)
     except Exception as exc:  # noqa: BLE001
         errors.append(f"eastmoney-ulist: {exc}")
 
-    try:
-        return _fetch_cn_eastmoney(code, timeout)
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"eastmoney: {exc}")
+    if quote is None or quote.iopv is None or quote.premium_rate is None:
+        try:
+            extra = _fetch_cn_eastmoney(code, timeout)
+            quote = _merge_cn_quotes(quote, extra)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"eastmoney: {exc}")
+
+    if quote is not None:
+        return quote
 
     try:
         return _fetch_cn_sina(code, timeout)
@@ -74,11 +149,11 @@ def fetch_cn_price(code: str, timeout: float = 10.0) -> QuoteResult:
 
 
 def _fetch_cn_eastmoney_ulist(code: str, timeout: float) -> QuoteResult:
-    """东财 ulist：现价 + IOPV(f441)，溢价率 = (现价-IOPV)/IOPV。"""
+    """东财 ulist：现价 + IOPV(f441)/净值(f186)/溢价(f191)。"""
     url = "https://push2.eastmoney.com/api/qt/ulist.np/get"
     params = {
         "secids": _cn_secid(code),
-        "fields": "f2,f12,f14,f441,f402",
+        "fields": "f2,f12,f14,f186,f191,f402,f441",
         "invt": "2",
         "fltt": "2",
     }
@@ -92,20 +167,11 @@ def _fetch_cn_eastmoney_ulist(code: str, timeout: float) -> QuoteResult:
     if not rows:
         raise RuntimeError("无行情数据")
     row = rows[0]
-    price = _optional_float(row.get("f2"))
-    if price is None or price <= 0:
+    price = _positive_float(row.get("f2"))
+    if price is None:
         raise RuntimeError("无最新价")
 
-    iopv = _optional_float(row.get("f441"))
-    if iopv is not None and iopv <= 0:
-        iopv = None
-    premium = _premium_from_price_iopv(price, iopv)
-    if premium is None:
-        # f402 为折价率（正=折价），取负得到溢价率
-        discount = _optional_float(row.get("f402"))
-        if discount is not None:
-            premium = round(-discount, 2)
-
+    iopv, premium = _etf_valuation(row, price)
     return QuoteResult(price=price, snapshot_date=date.today(), iopv=iopv, premium_rate=premium)
 
 
@@ -113,7 +179,7 @@ def _fetch_cn_eastmoney(code: str, timeout: float) -> QuoteResult:
     url = "https://push2.eastmoney.com/api/qt/stock/get"
     params = {
         "secid": _cn_secid(code),
-        "fields": "f43,f57,f58,f86",
+        "fields": "f43,f57,f58,f86,f186,f191,f402,f441",
         "invt": "2",
         "fltt": "2",
     }
@@ -131,10 +197,13 @@ def _fetch_cn_eastmoney(code: str, timeout: float) -> QuoteResult:
     price_value = float(price)
     if price_value > 10000:
         price_value = price_value / 100.0
+    if price_value <= 0:
+        raise RuntimeError("无最新价")
 
     ts = data.get("f86")
     snapshot = datetime.fromtimestamp(int(ts)).date() if ts else date.today()
-    return QuoteResult(price=price_value, snapshot_date=snapshot)
+    iopv, premium = _etf_valuation(data, price_value)
+    return QuoteResult(price=price_value, snapshot_date=snapshot, iopv=iopv, premium_rate=premium)
 
 
 def _fetch_cn_sina(code: str, timeout: float) -> QuoteResult:

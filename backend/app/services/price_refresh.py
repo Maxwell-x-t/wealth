@@ -5,7 +5,8 @@ from typing import List
 from sqlalchemy.orm import Session
 
 from app.models.models import Instrument, PriceSnapshot
-from app.services.market_data import fetch_instrument_price, resolve_source_label
+from app.services.holdings import previous_positive_iopv
+from app.services.market_data import apply_previous_iopv, fetch_instrument_price, resolve_source_label
 
 
 def refresh_all_prices(db: Session) -> dict:
@@ -22,6 +23,11 @@ def refresh_all_prices(db: Session) -> dict:
         source = resolve_source_label(instrument)
         try:
             quote = fetch_instrument_price(instrument)
+            if quote.iopv is None or quote.premium_rate is None:
+                quote = apply_previous_iopv(
+                    quote,
+                    previous_positive_iopv(db, instrument.id, quote.snapshot_date),
+                )
             db.add(
                 PriceSnapshot(
                     instrument_id=instrument.id,

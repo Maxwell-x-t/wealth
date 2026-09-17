@@ -1,12 +1,8 @@
 import json
 import os
-import tempfile
 from datetime import date
 from pathlib import Path
 from uuid import uuid4
-
-os.environ["WEALTH_DATA_DIR"] = tempfile.mkdtemp(prefix="wealth-ledger-tests-")
-os.environ["WEALTH_DISABLE_SYNC"] = "1"
 
 import pytest
 from fastapi.testclient import TestClient

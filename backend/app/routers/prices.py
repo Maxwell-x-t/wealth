@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.models import Instrument, PriceSnapshot
 from app.schemas.schemas import PriceOut, PriceRefreshItem, PriceRefreshResult, PriceUpdate
+from app.services.holdings import get_latest_quotes
 from app.services.price_refresh import refresh_all_prices
 
 router = APIRouter(prefix="/api/prices", tags=["prices"])
@@ -21,14 +22,25 @@ def _snapshot_optional_float(latest: Optional[PriceSnapshot], attr: str) -> Opti
     return float(value)
 
 
-def _to_price_out(instrument: Instrument, latest: Optional[PriceSnapshot]) -> PriceOut:
+def _to_price_out(
+    instrument: Instrument,
+    latest: Optional[PriceSnapshot],
+    quote: Optional[dict] = None,
+) -> PriceOut:
+    quote = quote or {}
+    iopv = quote.get("iopv")
+    premium_rate = quote.get("premium_rate")
+    if iopv is None:
+        iopv = _snapshot_optional_float(latest, "iopv")
+    if premium_rate is None:
+        premium_rate = _snapshot_optional_float(latest, "premium_rate")
     return PriceOut(
         instrument_id=instrument.id,
         instrument_code=instrument.code,
         instrument_name=instrument.name,
         price=float(latest.price) if latest else None,
-        iopv=_snapshot_optional_float(latest, "iopv"),
-        premium_rate=_snapshot_optional_float(latest, "premium_rate"),
+        iopv=iopv,
+        premium_rate=premium_rate,
         snapshot_date=latest.snapshot_date if latest else None,
         currency=instrument.currency,
     )
@@ -42,6 +54,7 @@ def list_latest_prices(db: Session = Depends(get_db)):
         .order_by(Instrument.id)
         .all()
     )
+    quotes = get_latest_quotes(db)
     result: List[PriceOut] = []
 
     for instrument in instruments:
@@ -51,7 +64,7 @@ def list_latest_prices(db: Session = Depends(get_db)):
             .order_by(PriceSnapshot.snapshot_date.desc(), PriceSnapshot.id.desc())
             .first()
         )
-        result.append(_to_price_out(instrument, latest))
+        result.append(_to_price_out(instrument, latest, quotes.get(instrument.id)))
 
     return result
 
