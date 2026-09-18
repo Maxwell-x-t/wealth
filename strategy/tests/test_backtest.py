@@ -78,6 +78,32 @@ def test_future_report_cannot_supply_earlier_eps():
     assert frame.at["2019-01-03", "eps"] == 1
 
 
+def test_backtest_payout_uses_annual_eps_not_ttm():
+    days = [(date(2026, 9, 10) + timedelta(days=i)).isoformat() for i in range(8)]
+    prices = [{"date": day, "open": 22.26, "close": 22.26,
+               "high": 22.4, "low": 22.1, "volume": 10000} for day in days]
+    records = [
+        {"report_date": "2025-06-30", "announced": "2025-09-27", "ex_date": "2025-10-13",
+         "state": "implemented", "cash_per_share": 0.5, "split": 1, "special": False},
+        {"report_date": "2025-12-31", "announced": "2026-06-13", "ex_date": "2026-06-22",
+         "state": "implemented", "cash_per_share": 0.88, "split": 1, "special": False},
+        {"report_date": "2026-06-30", "announced": "2026-09-03", "ex_date": "2026-09-11",
+         "state": "implemented", "cash_per_share": 0.5, "split": 1, "special": False},
+    ]
+    item = {"code": "stock", "name": "华润江中", "group": "消费", "weight": 0.12,
+            "prices": prices, "actions": [], "dividend_records": records,
+            "financials": [
+                {"period": "2025-06-30", "published": "2025-08-22", "eps_ytd": 0.82},
+                {"period": "2025-12-31", "published": "2026-03-20", "eps_ytd": 1.43},
+                {"period": "2026-06-30", "published": "2026-08-22", "eps_ytd": 0.78},
+            ]}
+    frame = History({"stock": item}).frames["stock"]
+    day = "2026-09-17"
+    assert frame.at[day, "fiscal_eps"] == pytest.approx(1.43)
+    assert frame.at[day, "eps"] == pytest.approx(1.39)
+    assert frame.at[day, "yield"] * 22.26 / 100 == pytest.approx(1.38)
+
+
 def test_indicator_is_continuous_through_split_and_dividend():
     prices = [10] * 8 + [4.5] * 12
     history = History({"stock": asset(prices=prices, actions=[action(cash=1, split=2)])})

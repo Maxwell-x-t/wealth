@@ -75,12 +75,14 @@ def test_unknown_quality_blocks_buy_and_confirmed_exit_overrides_floor():
     assert decision.target_shares == 0
 
 
-def test_negative_pe_is_recognized_as_loss_in_quality_filter():
+def test_negative_pe_is_recognized_as_loss_in_quality_filter(monkeypatch):
     parts = [""] * 70
     parts[3], parts[39], parts[64] = "10", "-5", "6"
     quote = parse_tencent_quote('v_sh600011="' + "~".join(parts) + '";')
     source = AkShareDataSource()
     source._cache["a"] = quote
+    monkeypatch.setattr("dividend_grid.datasource.fetch_dividend_records",
+                        lambda _: (_ for _ in ()).throw(RuntimeError("offline")))
     metrics = source.get_quality("a")
     assert metrics.eps == -2
     assert assess(metrics, QualityConfig())[0] == "risk"

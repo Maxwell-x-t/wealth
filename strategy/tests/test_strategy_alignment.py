@@ -61,10 +61,12 @@ def test_live_yield_and_historical_signal_share_fiscal_calculation(monkeypatch):
     year = date.today().year - 1
     records = [record(year, f"{year + 1}-01-02", 0.6)]
     monkeypatch.setattr("dividend_grid.datasource.fetch_dividend_records", lambda _: records)
+    monkeypatch.setattr("dividend_grid.datasource.fetch_annual_eps_map", lambda _: {year: 1.0})
     source = AkShareDataSource()
     source._cache["a"] = {"现价": 10, "股息率(TTM)": 20, "股息(TTM)": 2, "每股收益": 1}
     assert source.get_yield("a")[0] == pytest.approx(6)
     assert source.get_quality("a").payout_ratio == pytest.approx(60)
+    assert source.get_quality("a").eps == pytest.approx(1.0)
     bars = [{"date": today, "open": 10, "close": 10, "high": 11, "low": 9, "volume": 100}]
     asset = {"name": "A", "group": "test", "prices": bars, "actions": records, "financials": [], "weight": 0.12}
     frame = History({"a": asset}).frames["a"]

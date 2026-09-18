@@ -49,6 +49,50 @@ def _number(value):
         return None
 
 
+def _signed_number(value):
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_annual_eps(payload: dict) -> dict[int, float]:
+    """年报基本每股收益，按财年对齐派息率分子。"""
+    result = payload.get("result")
+    if not result or not isinstance(result.get("data"), list):
+        raise ValueError("财务指标缺失，不能假定每股收益")
+    if result.get("pages", 1) > 1:
+        raise ValueError("财务指标分页不完整")
+    years: dict[int, float] = {}
+    for row in result["data"]:
+        period = _date(row.get("REPORT_DATE"))
+        if not period or not period.endswith("12-31"):
+            continue
+        eps = _signed_number(row.get("EPSJB"))
+        if eps is None:
+            continue
+        years[int(period[:4])] = eps
+    return years
+
+
+def fetch_annual_eps_map(code: str) -> dict[int, float]:
+    digits = code[2:] if code[:2].lower() in ("sh", "sz", "bj") else code
+    response = requests.get(DIVIDEND_URL, params={
+        "reportName": "RPT_F10_FINANCE_MAINFINADATA", "columns": "ALL", "pageSize": "200",
+        "sortColumns": "REPORT_DATE", "sortTypes": "-1",
+        "filter": f'(SECURITY_CODE="{digits}")'},
+        headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
+    response.raise_for_status()
+    return parse_annual_eps(response.json())
+
+
+def payout_percent(dps: float | None, eps: float | None) -> float | None:
+    if dps is None or eps is None or eps <= 0:
+        return None
+    return dps / eps * 100.0
+
+
 def parse_dividend_records(payload: dict) -> list[dict]:
     result = payload.get("result")
     if not result or not isinstance(result.get("data"), list):

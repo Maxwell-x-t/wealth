@@ -304,8 +304,10 @@ def _main(argv: Optional[list[str]] = None) -> int:
         if metrics is not None and price is not None:
             from dataclasses import replace
             dps = price * y / 100.0
-            metrics = replace(metrics, dividend_per_share=dps, payout_ratio=(
-                dps / metrics.eps * 100.0 if metrics.eps and metrics.eps > 0 else None))
+            payout = metrics.payout_ratio
+            if payout is not None and metrics.eps and metrics.eps > 0:
+                payout = dps / metrics.eps * 100.0
+            metrics = replace(metrics, dividend_per_share=dps, payout_ratio=payout)
         qflag, qnote = assess_quality(metrics, qcfg)
         coverage = _coverage_for(code, y, metrics, ccfg) if not args.no_coverage else CoverageMetrics(
             kind="unknown", flag="unknown", note="已按 --no-coverage 跳过")

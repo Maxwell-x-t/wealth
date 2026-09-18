@@ -226,7 +226,7 @@ class History:
         report_index = 0
         dividends = []  # 每条：[财年, 除息日, 每股分红(已按后续拆股调整), 报告期]
         known_splits = []
-        yields, norms, earnings, adjusted, rsis = [], [], [], [], []
+        yields, norms, earnings, fiscal_earnings, adjusted, rsis = [], [], [], [], [], []
         factor, previous = 1.0, None
         weekly_closes, last_week = [], None
         for day in self.calendar:
@@ -290,6 +290,10 @@ class History:
                     if all(value is not None for value in values):
                         eps = values[0] + values[1] - values[2]
             earnings.append(eps if eps is not None else float("nan"))
+            fy_eps = None
+            if snapshot.fiscal_year is not None:
+                fy_eps = eps_for(f"{snapshot.fiscal_year}-12-31")
+            fiscal_earnings.append(fy_eps if fy_eps is not None else float("nan"))
             indicator_price = current * factor if pd.notna(current) else float("nan")
             adjusted.append(indicator_price)
             rsi = float("nan")
@@ -310,6 +314,7 @@ class History:
         frame["dividend_note"] = dividend_notes
         frame["yield_norm"] = norms
         frame["eps"] = earnings
+        frame["fiscal_eps"] = fiscal_earnings
         frame["adjusted"] = adjusted
         frame["rsi"] = rsis
         frame["rsi"] = frame["rsi"].ffill()
@@ -414,10 +419,13 @@ class Simulation:
                 if code not in marks:
                     continue
                 frame, asset = self.history.frames[code], self.history.assets[code]
-                eps, raw_y = float(frame.at[day, "eps"]), float(frame.at[day, "yield"])
+                ttm_eps, fy_eps = float(frame.at[day, "eps"]), float(frame.at[day, "fiscal_eps"])
+                raw_y = float(frame.at[day, "yield"])
                 dps = raw_y * marks[code] / 100.0
+                payout = dps / fy_eps * 100 if math.isfinite(fy_eps) and fy_eps > 0 else None
+                eps = fy_eps if math.isfinite(fy_eps) else ttm_eps
                 metrics = None if math.isnan(eps) else QualityMetrics(
-                    eps=eps, dividend_per_share=dps, payout_ratio=dps / eps * 100 if eps > 0 else None)
+                    eps=eps, dividend_per_share=dps, payout_ratio=payout)
                 quality, note = assess(metrics, self.quality_config)
                 self.quality_observations[quality] += 1
                 coverage = CoverageMetrics()

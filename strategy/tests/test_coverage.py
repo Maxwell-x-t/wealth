@@ -278,6 +278,8 @@ def test_quality_metrics_convert_market_cap_to_yuan(monkeypatch):
         "每股收益": 1.0, "股息(TTM)": 0.6, "市盈率(TTM)": 5.0, "市净率": 0.46,
         "总市值(亿)": 3860.11, "股息率(TTM)": 5.84, "_source": "tencent",
     })
+    monkeypatch.setattr("dividend_grid.datasource.fetch_dividend_records",
+                        lambda _: (_ for _ in ()).throw(RuntimeError("offline")))
     metrics = source.get_quality("sh601166")
     assert metrics.market_cap == pytest.approx(3860.11e8)
     assert metrics.payout_ratio == pytest.approx(60.0)

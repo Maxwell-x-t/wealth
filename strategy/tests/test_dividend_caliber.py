@@ -10,7 +10,8 @@ from datetime import date, timedelta
 import pytest
 
 from dividend_grid.datasource import AkShareDataSource
-from dividend_grid.dividends import CALIBER_NAME, fiscal_dividend
+from dividend_grid.dividends import CALIBER_NAME, fiscal_dividend, parse_annual_eps
+from dividend_grid.quality import QualityConfig, assess
 from dividend_grid.models import Decision, PortfolioResult, Stock
 from dividend_grid.report import _caliber_line, render_table
 
@@ -143,6 +144,36 @@ def test_yield_and_snapshot_share_one_dividend_fetch(monkeypatch):
     assert yield_pct == pytest.approx(1.16071 / 21.03 * 100, rel=1e-6)
     assert CALIBER_NAME in note
     assert snapshot.fiscal_year == 2025
+
+
+def test_parse_annual_eps_keeps_year_end_basic_eps():
+    years = parse_annual_eps({"result": {"data": [
+        {"REPORT_DATE": "2026-06-30", "EPSJB": 0.78},
+        {"REPORT_DATE": "2025-12-31", "EPSJB": 1.43},
+        {"REPORT_DATE": "2024-12-31", "EPSJB": 1.25},
+    ]}})
+    assert years == {2025: 1.43, 2024: 1.25}
+
+
+def test_jiangzhong_payout_uses_fiscal_eps_not_ttm(monkeypatch):
+    """华润江中：同花顺约 96% 来自 FY2025 DPS 1.38 / 年报 EPS 1.43，不能用 TTM EPS 抬过 100%。"""
+    records = [
+        rec("2025-06-30", "2025-09-27", "2025-10-13", 0.50),
+        rec("2025-12-31", "2026-06-13", "2026-06-22", 0.88),
+        rec("2026-06-30", "2026-09-03", "2026-09-11", 0.50),
+    ]
+    monkeypatch.setattr("dividend_grid.datasource.fetch_dividend_records", lambda _: records)
+    monkeypatch.setattr("dividend_grid.datasource.fetch_annual_eps_map", lambda _: {2025: 1.43})
+    source = AkShareDataSource()
+    source._cache["sh600750"] = {
+        "现价": 22.26, "市盈率(TTM)": 16.16, "每股收益": 1.3774752475247525,
+        "股息率(TTM)": 6.2, "股息(TTM)": 1.38012, "_source": "tencent",
+    }
+    metrics = source.get_quality("sh600750")
+    assert metrics.dividend_per_share == pytest.approx(1.38)
+    assert metrics.eps == pytest.approx(1.43)
+    assert metrics.payout_ratio == pytest.approx(1.38 / 1.43 * 100)
+    assert assess(metrics, QualityConfig()) == ("warn", "派息率96.50%偏高")
 
 
 def _stock(name, year, dps, **kw):

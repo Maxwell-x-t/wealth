@@ -16,16 +16,23 @@ from dataclasses import dataclass
 from typing import Optional, Protocol
 from urllib.request import Request, urlopen
 
-from .dividends import CALIBER_NAME, DividendUnavailable, fetch_dividend_records, fiscal_dividend
+from .dividends import (
+    CALIBER_NAME,
+    DividendUnavailable,
+    fetch_annual_eps_map,
+    fetch_dividend_records,
+    fiscal_dividend,
+    payout_percent,
+)
 
 
 @dataclass
 class QualityMetrics:
     """分红质量相关指标（用于价值陷阱过滤）。"""
 
-    eps: Optional[float] = None  # 每股收益(TTM)
-    dividend_per_share: Optional[float] = None  # 每股股息(TTM)
-    payout_ratio: Optional[float] = None  # 派息率% = 股息/EPS*100
+    eps: Optional[float] = None  # 优先该财年年报 EPS，否则 TTM
+    dividend_per_share: Optional[float] = None  # 优先财年口径 DPS
+    payout_ratio: Optional[float] = None  # 派息率% = 同财年 DPS/EPS*100
     pe_ttm: Optional[float] = None
     pb: Optional[float] = None
     market_cap: Optional[float] = None  # 总市值（元），用于推算分红总额
@@ -159,12 +166,14 @@ class AkShareDataSource:
     可选：环境变量 ``XQ_A_TOKEN`` / ``XUEQIU_TOKEN`` 时优先走雪球。
     股息率不取行情里的 TTM 字段，改由东方财富分红明细按统一方案口径重算（见
     ``dividends.CALIBER_RULE``），避免除息日漂移与分红节奏变化造成假信号。
+    派息率用同一财年的 DPS ÷ 年报基本 EPS，不用腾讯 TTM 市盈率反推。
     按代码缓存，get_yield / get_quality / get_dividend_snapshot 共用同一次请求。
     """
 
     def __init__(self, token: Optional[str] = None):
         self._cache: dict[str, dict] = {}
         self._dividend_cache: dict[str, object] = {}
+        self._eps_cache: dict[str, dict[int, float]] = {}
         self._token = (
             token
             or os.environ.get("XQ_A_TOKEN", "")
@@ -223,6 +232,16 @@ class AkShareDataSource:
                 raise DividendUnavailable(f"{code} 分红明细不可用：{exc}") from exc
         return self._dividend_cache[code]
 
+    def _annual_eps(self, code: str, year: Optional[int]) -> Optional[float]:
+        if year is None:
+            return None
+        if code not in self._eps_cache:
+            try:
+                self._eps_cache[code] = fetch_annual_eps_map(code)
+            except Exception:  # noqa: BLE001
+                self._eps_cache[code] = {}
+        return self._eps_cache[code].get(year)
+
     def get_yield(self, code: str) -> tuple[float, str]:
         kv = self._fetch(code)
         price = _to_float(kv.get("现价"))
@@ -248,19 +267,28 @@ class AkShareDataSource:
             kv = self._fetch(code)
         except Exception:  # noqa: BLE001
             return None
-        eps = _to_float(kv.get("每股收益"))
-        dps = _to_float(kv.get("股息(TTM)"))
-        if code in self._dividend_cache:
-            dps = self._dividend_cache[code].dps
+        ttm_eps = _to_float(kv.get("每股收益"))
+        ttm_dps = _to_float(kv.get("股息(TTM)"))
         pe = _to_float(kv.get("市盈率(TTM)"))
         pb = _to_float(kv.get("市净率"))
         cap_yi = _to_float(kv.get("总市值(亿)"))
-        payout = None
-        if eps is not None and dps is not None and eps > 0:
-            payout = dps / eps * 100.0
-        elif pe is not None and pe > 0 and kv.get("股息率(TTM)") not in (None, ""):
-            # 派息率 ≈ 股息率% × 市盈率（DPS/P × P/EPS）
-            payout = float(kv["股息率(TTM)"]) * pe
+        snapshot = None
+        try:
+            snapshot = self._snapshot(code)
+        except Exception:  # noqa: BLE001
+            snapshot = None
+        fy_eps = None
+        if snapshot is not None and snapshot.dps is not None:
+            dps = snapshot.dps
+            fy_eps = self._annual_eps(code, snapshot.fiscal_year)
+            eps = fy_eps if fy_eps is not None else ttm_eps
+            payout = payout_percent(dps, fy_eps)
+        else:
+            dps = ttm_dps
+            eps = ttm_eps
+            payout = payout_percent(dps, ttm_eps)
+            if payout is None and pe is not None and pe > 0 and kv.get("股息率(TTM)") not in (None, ""):
+                payout = float(kv["股息率(TTM)"]) * pe
         src = str(kv.get("_source", "tencent"))
         return QualityMetrics(
             eps=eps,
