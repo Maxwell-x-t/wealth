@@ -36,6 +36,16 @@ else
 fi
 
 PYTHON="$ROOT/../backend/.venv/bin/python"
+if ! PYTHONPATH="$ROOT/../backend" "$PYTHON" -c 'from datetime import datetime
+from zoneinfo import ZoneInfo
+from app.services.calendar import is_trading_day
+today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+if is_trading_day(today, "cn"):
+    raise SystemExit(0)
+print(f"非交易日，跳过推送：{today.isoformat()}")
+raise SystemExit(1)'; then
+  exit 0
+fi
 grid_status=0
 "$PYTHON" scripts/grid_calculator.py \
   --source akshare \
