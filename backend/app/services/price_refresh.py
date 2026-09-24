@@ -6,7 +6,13 @@ from sqlalchemy.orm import Session
 
 from app.models.models import Instrument, PriceSnapshot
 from app.services.holdings import previous_positive_iopv
-from app.services.market_data import apply_previous_iopv, fetch_instrument_price, resolve_source_label
+from app.services.market_data import (
+    QuoteResult,
+    apply_previous_iopv,
+    fetch_instrument_price,
+    is_cn_etf,
+    resolve_source_label,
+)
 
 
 def refresh_all_prices(db: Session) -> dict:
@@ -23,11 +29,14 @@ def refresh_all_prices(db: Session) -> dict:
         source = resolve_source_label(instrument)
         try:
             quote = fetch_instrument_price(instrument)
-            if quote.iopv is None or quote.premium_rate is None:
-                quote = apply_previous_iopv(
-                    quote,
-                    previous_positive_iopv(db, instrument.id, quote.snapshot_date),
-                )
+            if is_cn_etf(instrument.code):
+                if quote.iopv is None or quote.premium_rate is None:
+                    quote = apply_previous_iopv(
+                        quote,
+                        previous_positive_iopv(db, instrument.id, quote.snapshot_date),
+                    )
+            else:
+                quote = QuoteResult(price=quote.price, snapshot_date=quote.snapshot_date)
             db.add(
                 PriceSnapshot(
                     instrument_id=instrument.id,

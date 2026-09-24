@@ -22,10 +22,10 @@ function signedClass(value) {
   return Number(value) >= 0 ? 'positive' : 'negative'
 }
 
-function renderPriceWithPremium(price, currency, premiumRate) {
+function renderPriceWithPremium(price, currency, premiumRate, code) {
   if (price == null) return '-'
   const priceText = formatPrice(price, currency)
-  const premiumText = formatPremiumRate(premiumRate)
+  const premiumText = formatPremiumRate(premiumRate, code)
   if (!premiumText) return priceText
   return h('span', {}, [
     priceText,
@@ -124,7 +124,7 @@ const columns = [
   {
     title: '最新价',
     key: 'price',
-    render: (row) => renderPriceWithPremium(row.price, row.currency, row.premium_rate),
+    render: (row) => renderPriceWithPremium(row.price, row.currency, row.premium_rate, row.instrument_code),
   },
   {
     title: '更新日期',
@@ -151,7 +151,7 @@ const refreshColumns = [
     key: 'price',
     render: (row) => {
       if (row.price == null) return '-'
-      const premiumText = formatPremiumRate(row.premium_rate)
+      const premiumText = formatPremiumRate(row.premium_rate, row.instrument_code)
       if (!premiumText) return formatNumber(row.price, 3)
       return h('span', {}, [
         formatNumber(row.price, 3),

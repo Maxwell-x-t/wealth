@@ -22,6 +22,14 @@ class QuoteResult:
     premium_rate: Optional[float] = None
 
 
+def is_cn_etf(code: str) -> bool:
+    """大陆 ETF/LOF。个股的东财字段不是 IOPV，不计算溢价。"""
+    normalized = code.strip()
+    if len(normalized) > 2 and normalized[:2].lower() in {"sh", "sz"} and normalized[2:].isdigit():
+        normalized = normalized[2:]
+    return normalized.startswith(("15", "16", "50", "51", "56", "58"))
+
+
 def _cn_market_prefix(code: str) -> str:
     if code.startswith(("5", "6", "9")):
         return "sh"
@@ -130,7 +138,10 @@ def fetch_cn_price(code: str, timeout: float = 10.0) -> QuoteResult:
     except Exception as exc:  # noqa: BLE001
         errors.append(f"eastmoney-ulist: {exc}")
 
-    if quote is None or quote.iopv is None or quote.premium_rate is None:
+    needs_valuation = is_cn_etf(code) and (
+        quote is None or quote.iopv is None or quote.premium_rate is None
+    )
+    if quote is None or needs_valuation:
         try:
             extra = _fetch_cn_eastmoney(code, timeout)
             quote = _merge_cn_quotes(quote, extra)
@@ -138,6 +149,8 @@ def fetch_cn_price(code: str, timeout: float = 10.0) -> QuoteResult:
             errors.append(f"eastmoney: {exc}")
 
     if quote is not None:
+        if not is_cn_etf(code):
+            return QuoteResult(price=quote.price, snapshot_date=quote.snapshot_date)
         return quote
 
     try:
@@ -171,7 +184,7 @@ def _fetch_cn_eastmoney_ulist(code: str, timeout: float) -> QuoteResult:
     if price is None:
         raise RuntimeError("无最新价")
 
-    iopv, premium = _etf_valuation(row, price)
+    iopv, premium = _etf_valuation(row, price) if is_cn_etf(code) else (None, None)
     return QuoteResult(price=price, snapshot_date=date.today(), iopv=iopv, premium_rate=premium)
 
 
@@ -202,7 +215,7 @@ def _fetch_cn_eastmoney(code: str, timeout: float) -> QuoteResult:
 
     ts = data.get("f86")
     snapshot = datetime.fromtimestamp(int(ts)).date() if ts else date.today()
-    iopv, premium = _etf_valuation(data, price_value)
+    iopv, premium = _etf_valuation(data, price_value) if is_cn_etf(code) else (None, None)
     return QuoteResult(price=price_value, snapshot_date=snapshot, iopv=iopv, premium_rate=premium)
 
 

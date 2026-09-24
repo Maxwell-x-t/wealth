@@ -17,8 +17,15 @@ export function formatPrice(value, currency = 'CNY') {
   })}`
 }
 
-/** ETF 溢价率：正=溢价，负=折价 */
-export function formatPremiumRate(value) {
+/** 大陆 ETF/LOF。个股不展示溢价。 */
+export function isCnEtf(code) {
+  const normalized = String(code || '').trim().replace(/^(sh|sz)/i, '')
+  return /^(15|16|50|51|56|58)/.test(normalized)
+}
+
+/** ETF 溢价率：正=溢价，负=折价。传入代码时，非大陆 ETF 不展示。 */
+export function formatPremiumRate(value, code) {
+  if (code !== undefined && !isCnEtf(code)) return null
   if (value === null || value === undefined || Number.isNaN(Number(value))) return null
   const n = Number(value)
   const sign = n > 0 ? '+' : ''

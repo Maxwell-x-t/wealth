@@ -52,7 +52,7 @@ const holdingColumns = [
     key: 'current_price',
     render: (row) => {
       const priceText = formatPrice(row.current_price, row.currency)
-      const premiumText = formatPremiumRate(row.premium_rate)
+      const premiumText = formatPremiumRate(row.premium_rate, row.code)
       if (!premiumText) return priceText
       return h('span', {}, [
         priceText,

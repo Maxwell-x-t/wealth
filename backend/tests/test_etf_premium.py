@@ -3,10 +3,10 @@ from unittest.mock import patch
 
 import pytest
 from app.database import Base, SessionLocal, engine
-from app.models.models import Instrument, PriceSnapshot
+from app.models.models import Account, Instrument, PriceSnapshot
 from app.services.config import seed_database
 from app.services.holdings import get_latest_quotes
-from app.services.market_data import QuoteResult, _etf_valuation, apply_previous_iopv
+from app.services.market_data import QuoteResult, _etf_valuation, apply_previous_iopv, is_cn_etf
 from app.services.price_refresh import refresh_all_prices
 
 
@@ -18,6 +18,97 @@ def db():
         seed_database(session)
         session.commit()
         yield session
+
+
+def test_is_cn_etf_matches_fund_prefixes_only():
+    assert is_cn_etf("159915") is True
+    assert is_cn_etf("512890") is True
+    assert is_cn_etf("518880") is True
+    assert is_cn_etf("563360") is True
+    assert is_cn_etf("588000") is True
+    assert is_cn_etf("sh513100") is True
+    assert is_cn_etf("000001") is False
+    assert is_cn_etf("600036") is False
+    assert is_cn_etf("601318") is False
+    assert is_cn_etf("QQQM") is False
+
+
+def test_stock_latest_quotes_drop_stored_premium(db):
+    account = db.query(Account).filter_by(name="大陆").one()
+    stock = Instrument(
+        code="600036",
+        name="招商银行",
+        category="a_share",
+        account_id=account.id,
+        currency="CNY",
+    )
+    db.add(stock)
+    db.flush()
+    db.add(
+        PriceSnapshot(
+            instrument_id=stock.id,
+            price=41,
+            iopv=51.45,
+            premium_rate=-20.31,
+            snapshot_date=date(2026, 9, 22),
+        )
+    )
+    db.commit()
+
+    quote = get_latest_quotes(db)[stock.id]
+    assert float(quote["price"]) == 41
+    assert quote["iopv"] is None
+    assert quote["premium_rate"] is None
+
+
+def test_refresh_stock_clears_carried_premium(db):
+    account = db.query(Account).filter_by(name="大陆").one()
+    stock = Instrument(
+        code="000001",
+        name="平安银行",
+        category="a_share",
+        account_id=account.id,
+        currency="CNY",
+    )
+    db.add(stock)
+    db.flush()
+    db.add(
+        PriceSnapshot(
+            instrument_id=stock.id,
+            price=11.5,
+            iopv=665515275,
+            premium_rate=-100,
+            snapshot_date=date.today(),
+        )
+    )
+    db.commit()
+
+    def fake_quote(item):
+        if item.code == "000001":
+            return QuoteResult(
+                price=11.72,
+                snapshot_date=date.today(),
+                iopv=665515275,
+                premium_rate=-100,
+            )
+        return QuoteResult(price=1.0, snapshot_date=date.today())
+
+    with patch("app.services.price_refresh.fetch_instrument_price", side_effect=fake_quote):
+        result = refresh_all_prices(db)
+
+    item = next(row for row in result["items"] if row["instrument_code"] == "000001")
+    assert item["success"] is True
+    assert item["iopv"] is None
+    assert item["premium_rate"] is None
+    latest = (
+        db.query(PriceSnapshot)
+        .filter_by(instrument_id=stock.id)
+        .order_by(PriceSnapshot.id.desc())
+        .first()
+    )
+    assert float(latest.price) == 11.72
+    assert latest.iopv is None
+    assert latest.premium_rate is None
 
 
 def test_etf_valuation_from_iopv():
