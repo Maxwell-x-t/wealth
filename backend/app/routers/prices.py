@@ -8,6 +8,7 @@ from app.database import get_db
 from app.models.models import Instrument, PriceSnapshot
 from app.schemas.schemas import PriceOut, PriceRefreshItem, PriceRefreshResult, PriceUpdate
 from app.services.holdings import get_latest_quotes
+from app.services.market_data import is_cn_etf
 from app.services.price_refresh import refresh_all_prices
 
 router = APIRouter(prefix="/api/prices", tags=["prices"])
@@ -28,12 +29,16 @@ def _to_price_out(
     quote: Optional[dict] = None,
 ) -> PriceOut:
     quote = quote or {}
-    iopv = quote.get("iopv")
-    premium_rate = quote.get("premium_rate")
-    if iopv is None:
-        iopv = _snapshot_optional_float(latest, "iopv")
-    if premium_rate is None:
-        premium_rate = _snapshot_optional_float(latest, "premium_rate")
+    if is_cn_etf(instrument.code):
+        iopv = quote.get("iopv")
+        premium_rate = quote.get("premium_rate")
+        if iopv is None:
+            iopv = _snapshot_optional_float(latest, "iopv")
+        if premium_rate is None:
+            premium_rate = _snapshot_optional_float(latest, "premium_rate")
+    else:
+        iopv = None
+        premium_rate = None
     return PriceOut(
         instrument_id=instrument.id,
         instrument_code=instrument.code,

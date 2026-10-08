@@ -9,7 +9,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.models.models import Instrument, PriceSnapshot, StrategyAccount, Transaction
-from app.services.market_data import QuoteResult, apply_previous_iopv
+from app.services.market_data import QuoteResult, apply_previous_iopv, is_cn_etf
 
 
 D = Decimal
@@ -211,6 +211,13 @@ def get_latest_quotes(db: Session) -> dict[int, dict]:
             .first()
         )
         if not latest:
+            continue
+        if not is_cn_etf(instrument.code):
+            quotes[instrument.id] = {
+                "price": _to_decimal(latest.price),
+                "iopv": None,
+                "premium_rate": None,
+            }
             continue
         iopv = float(latest.iopv) if getattr(latest, "iopv", None) is not None else None
         premium = (
