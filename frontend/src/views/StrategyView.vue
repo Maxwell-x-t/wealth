@@ -87,6 +87,40 @@ const rows = computed(
       (h) => showAll.value || h.quantity > 0 || h.code === "sh512890",
     ) || [],
 );
+const sleeveNames = { grid: "红利网格", rsi: "周线 RSI6", other: "仅记账" };
+const holdingSort = ref(null);
+
+function holdingSortValue(row, key) {
+  if (key === "sleeve") return sleeveNames[row.sleeve] || "";
+  return row[key];
+}
+
+const sortedRows = computed(() => {
+  const list = rows.value.slice();
+  const columnKey = holdingSort.value?.columnKey;
+  const order = holdingSort.value?.order;
+  if (!columnKey || !order) return list;
+  const direction = order === "descend" ? -1 : 1;
+  return list.sort((left, right) => {
+    const leftValue = holdingSortValue(left, columnKey);
+    const rightValue = holdingSortValue(right, columnKey);
+    const leftMissing = leftValue == null || leftValue === "";
+    const rightMissing = rightValue == null || rightValue === "";
+    if (leftMissing || rightMissing) {
+      if (leftMissing && rightMissing) return 0;
+      return leftMissing ? 1 : -1;
+    }
+    const compared =
+      typeof leftValue === "number" && typeof rightValue === "number"
+        ? leftValue - rightValue
+        : String(leftValue).localeCompare(String(rightValue), "zh-CN");
+    return compared * direction;
+  });
+});
+
+function onHoldingSort(state) {
+  holdingSort.value = Array.isArray(state) ? state[0] || null : state;
+}
 const allocations = computed(() => {
   const a = account.value;
   if (!a?.equity) return [];
@@ -164,6 +198,7 @@ const holdingColumns = [
   {
     title: "证券",
     key: "name",
+    sorter: true,
     width: 192,
     fixed: "left",
     render: (row) =>
@@ -175,6 +210,7 @@ const holdingColumns = [
   {
     title: "实际股数 / 份额",
     key: "quantity",
+    sorter: true,
     align: "right",
     width: 140,
     render: (r) => r.quantity.toLocaleString("zh-CN"),
@@ -182,6 +218,7 @@ const holdingColumns = [
   {
     title: "参考价",
     key: "price",
+    sorter: true,
     align: "right",
     width: 110,
     render: (r) =>
@@ -190,6 +227,7 @@ const holdingColumns = [
   {
     title: "市值（元）",
     key: "market_value",
+    sorter: true,
     align: "right",
     width: 144,
     render: (r) => money(r.market_value),
@@ -197,6 +235,7 @@ const holdingColumns = [
   {
     title: "资产占比",
     key: "weight",
+    sorter: true,
     align: "right",
     width: 100,
     render: (r) => percent(r.weight),
@@ -204,6 +243,7 @@ const holdingColumns = [
   {
     title: "策略",
     key: "sleeve",
+    sorter: true,
     width: 115,
     render: (r) =>
       h(
@@ -227,6 +267,7 @@ const holdingColumns = [
   {
     title: "行情日期",
     key: "price_date",
+    sorter: true,
     width: 110,
     render: (r) => r.price_date || "--",
   },
@@ -602,12 +643,14 @@ async function analyze() {
               >
             </div>
             <NDataTable
+              remote
               :columns="holdingColumns"
-              :data="rows"
+              :data="sortedRows"
               :row-key="(row) => row.instrument_id"
               :scroll-x="1063"
               :bordered="false"
               size="small"
+              @update:sorter="onHoldingSort"
           /></NTabPane>
           <NTabPane name="transactions" :tab="`成交 (${transactions.length})`"
             ><NDataTable
