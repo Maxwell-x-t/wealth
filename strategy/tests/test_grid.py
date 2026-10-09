@@ -256,6 +256,24 @@ def test_message_includes_non_triggered_yields():
     assert "买入股" in content
 
 
+def test_message_marks_quote_yield_above_fiscal_caliber():
+    from dividend_grid.report import build_dividend_message, quote_yield_warnings
+
+    stock = Stock(code="sz000538", name="云南白药", dividend_yield=3.07, quote_yield=5.09)
+    close = Stock(code="sz000333", name="美的集团", dividend_yield=5.17, quote_yield=5.06)
+    res = evaluate_portfolio([stock, close], {}, GridConfig())
+    _, content = build_dividend_message(res)
+    warnings = quote_yield_warnings([stock, close])
+
+    assert "云南白药 3.07%（行情 5.09%）" in content
+    assert "美的集团 5.17%（行情" not in content
+    assert len(warnings) == 1
+    assert "高出 2.02 个百分点" in warnings[0]
+    assert "买卖仍按财年口径" in warnings[0]
+    assert "东方财富分红明细还没收录的现金分红" in warnings[0]
+    assert "特别分红" not in warnings[0]
+
+
 # ---------- 行业分组阈值 ----------
 
 def _fin_cfg() -> GridConfig:

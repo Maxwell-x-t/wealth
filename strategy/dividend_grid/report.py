@@ -26,7 +26,44 @@ def _coverage_cell(s) -> str:
 
 
 def _yield_cell(d: Decision) -> str:
-    return f"{d.stock.dividend_yield:.2f}%{_mark(d)}" if d.stock.data_available and d.stock.dividend_available else "数据缺失"
+    if not d.stock.data_available or not d.stock.dividend_available:
+        return "数据缺失"
+    text = f"{d.stock.dividend_yield:.2f}%{_mark(d)}"
+    gap = _quote_yield_gap(d.stock)
+    if gap is not None:
+        text += f"（行情 {d.stock.quote_yield:.2f}%）"
+    return text
+
+
+QUOTE_YIELD_GAP = 0.5
+
+
+def _quote_yield_gap(stock) -> float | None:
+    """行情股息率明显高于财年口径时返回差额（百分点）。"""
+    if (
+        stock.quote_yield is None
+        or not stock.data_available
+        or not stock.dividend_available
+        or stock.overridden
+    ):
+        return None
+    gap = stock.quote_yield - stock.dividend_yield
+    if gap <= QUOTE_YIELD_GAP:
+        return None
+    return gap
+
+
+def quote_yield_warnings(stocks) -> list[str]:
+    notes = []
+    for stock in stocks:
+        gap = _quote_yield_gap(stock)
+        if gap is None:
+            continue
+        notes.append(
+            f"{stock.name}：财年口径 {stock.dividend_yield:.2f}%，行情股息率 {stock.quote_yield:.2f}%，"
+            f"高出 {gap:.2f} 个百分点。买卖仍按财年口径；差额来自行情已经计入、东方财富分红明细还没收录的现金分红。"
+        )
+    return notes
 
 
 def _caliber_line(result: PortfolioResult) -> str:

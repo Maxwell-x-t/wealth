@@ -15,7 +15,7 @@ from .grid import GridConfig, evaluate_portfolio
 from .datasource import make_source, apply_overrides
 from .quality import assess as assess_quality, load_quality_config
 from .coverage import CoverageConfig, CoverageMetrics, apply_coverage_review, evaluate_coverage
-from .report import render_table, build_dividend_message
+from .report import render_table, build_dividend_message, quote_yield_warnings
 from .notifiers import ConsoleNotifier, WeComWebhookNotifier
 from .portfolio import account_path, load_limits, load_etf_layers, value_account
 from .dividends import DividendUnavailable
@@ -285,6 +285,10 @@ def _main(argv: Optional[list[str]] = None) -> int:
             y, src, overridden = apply_overrides(
                 code, base_yield, base_source, overrides, price=price,
             )
+            quote_yield = None
+            quote_getter = getattr(source, "get_quote_yield", None)
+            if callable(quote_getter) and not overridden:
+                quote_yield = quote_getter(code)
         except DividendUnavailable as e:
             stocks.append(Stock(code=code, name=name, dividend_yield=0.0,
                                 weight=weight if weight is not None else args.pool,
@@ -333,6 +337,7 @@ def _main(argv: Optional[list[str]] = None) -> int:
                 price=price,
                 dividend_fiscal_year=None if overridden else getattr(snapshot, "fiscal_year", None),
                 dividend_dps=None if overridden else getattr(snapshot, "dps", None),
+                quote_yield=quote_yield,
             )
         )
 
@@ -344,6 +349,7 @@ def _main(argv: Optional[list[str]] = None) -> int:
     result.notes.extend(account.notes() if account else [
         "手工仓位估算：当前份数/层数需按最新净值校准；可通过 account.json 启用实际股数估值"])
     result.warnings.extend(f"{s.name}：{s.dividend_note}" for s in stocks if not s.dividend_available)
+    result.warnings.extend(quote_yield_warnings(stocks))
 
     # 输出建议表
     print(json.dumps(asdict(result), ensure_ascii=False) if args.json else render_table(result))

@@ -54,6 +54,30 @@ def event(api, **changes):
     return api.post(f"/api/strategy/accounts/{api.account_id}/cash-events", json=payload)
 
 
+def test_update_portfolio_rules(client, tmp_path, monkeypatch):
+    rules = tmp_path / "portfolio_rules.json"
+    rules.write_text(json.dumps({
+        "min_cash_pct": 20.0,
+        "max_industry_pct": 30.0,
+        "industry_limits": {"银行": 25},
+        "etf_budget_pct": 20.0,
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr("app.routers.strategy.PORTFOLIO_RULES", rules)
+
+    saved = client.put("/api/strategy/portfolio-rules", json={"min_cash_pct": 15, "etf_budget_pct": 25})
+    assert saved.status_code == 200, saved.text
+    assert saved.json() == {"min_cash_pct": 15, "etf_budget_pct": 25, "stock_cap_pct": 60}
+    written = json.loads(rules.read_text(encoding="utf-8"))
+    assert written["max_industry_pct"] == 30
+    assert written["industry_limits"] == {"银行": 25}
+    assert summary(client)["min_cash_pct"] == 15
+    assert summary(client)["etf_budget_pct"] == 25
+
+    rejected = client.put("/api/strategy/portfolio-rules", json={"min_cash_pct": 90, "etf_budget_pct": 20})
+    assert rejected.status_code == 422
+    assert summary(client)["min_cash_pct"] == 15
+
+
 def test_opening_is_not_a_fake_trade(client):
     s = summary(client)
     assert s["cash"] == 10000 and s["equity"] == 14000 and s["pnl_since_opening"] == 0

@@ -7,7 +7,7 @@ import pytest
 from dividend_grid.datasource import AkShareDataSource, apply_overrides, parse_tencent_quote
 from dividend_grid.grid import GridConfig, decide, evaluate_portfolio
 from dividend_grid.models import Stock
-from dividend_grid.portfolio import PortfolioLimits, load_etf_layers
+from dividend_grid.portfolio import PortfolioLimits, load_etf_layers, save_limits
 from dividend_grid.quality import QualityConfig, assess
 from dividend_grid.rsi6 import build_market_snapshot, rsi_wilder
 from dividend_grid.rsi6_data import adjusted_weekly_bars, fetch_weekly_bars
@@ -322,6 +322,22 @@ def test_shipped_portfolio_rules_allocate_exactly_100pct():
     assert limits.etf_budget_pct == 20.0
     assert stock_cap == 60.0
     assert limits.min_cash_pct + limits.etf_budget_pct + stock_cap == pytest.approx(100.0)
+
+
+def test_save_limits_updates_cash_and_etf_only(tmp_path):
+    path = tmp_path / "portfolio_rules.json"
+    path.write_text(
+        '{"min_cash_pct": 20.0, "max_industry_pct": 30.0, "industry_limits": {"银行": 25}, "etf_budget_pct": 20.0}\n',
+        encoding="utf-8",
+    )
+    limits = save_limits(path, 15, 25)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert limits.min_cash_pct == 15
+    assert limits.etf_budget_pct == 25
+    assert saved["max_industry_pct"] == 30
+    assert saved["industry_limits"] == {"银行": 25}
+    with pytest.raises(ValueError, match="不能超过 100%"):
+        save_limits(path, 90, 20)
 
 
 def test_stock_cap_tracks_cash_floor():

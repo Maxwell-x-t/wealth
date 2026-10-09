@@ -41,6 +41,27 @@ def load_limits(path: Path) -> PortfolioLimits:
     return PortfolioLimits(**raw)
 
 
+def save_limits(path: Path, min_cash_pct: float, etf_budget_pct: float) -> PortfolioLimits:
+    """只更新现金底线和 ETF 资金上限，保留行业限额。"""
+    with path.open(encoding="utf-8") as handle:
+        raw = json.load(handle)
+    raw["min_cash_pct"] = round(float(min_cash_pct), 2)
+    raw["etf_budget_pct"] = round(float(etf_budget_pct), 2)
+    try:
+        limits = PortfolioLimits(
+            min_cash_pct=raw["min_cash_pct"],
+            max_industry_pct=float(raw.get("max_industry_pct", 30)),
+            industry_limits=dict(raw.get("industry_limits") or {}),
+            etf_budget_pct=raw["etf_budget_pct"],
+        )
+    except ValueError as exc:
+        raise ValueError("现金底线与 512890 资金上限须在 0 到 100 之间，资金上限须大于 0，且两者相加不能超过 100%") from exc
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return limits
+
+
 def load_etf_layers(path: Path) -> int:
     with path.open(encoding="utf-8") as handle:
         raw = json.load(handle)
