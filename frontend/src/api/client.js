@@ -12,6 +12,7 @@ export const createCashEvent = (id, data) => client.post(`/strategy/accounts/${i
 export const deleteCashEvent = (id, eventId) => client.delete(`/strategy/accounts/${id}/cash-events/${eventId}`).then(r => r.data)
 export const getStrategySignals = id => client.get(`/strategy/accounts/${id}/signals`).then(r => r.data)
 export const refreshStrategySignals = id => client.post(`/strategy/accounts/${id}/signals`, null, { timeout: 260000 }).then(r => r.data)
+export const updatePortfolioRules = data => client.put('/strategy/portfolio-rules', data).then(r => r.data)
 
 export const getDashboard = (scope = 'index') =>
   client.get('/dashboard', { params: { scope } }).then((r) => r.data)

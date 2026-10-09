@@ -38,6 +38,7 @@ import {
   getTransactions,
   refreshPrices,
   refreshStrategySignals,
+  updatePortfolioRules,
 } from "../api/client";
 
 const message = useMessage();
@@ -61,6 +62,9 @@ const cashError = ref(""),
   cashForm = ref({}),
   activeTab = ref("holdings"),
   showAll = ref(false);
+const limitForm = ref({ min_cash_pct: null, etf_budget_pct: null }),
+  savingLimits = ref(false),
+  limitError = ref("");
 const money = (value) =>
   value == null
     ? "--"
@@ -121,6 +125,24 @@ const sortedRows = computed(() => {
 function onHoldingSort(state) {
   holdingSort.value = Array.isArray(state) ? state[0] || null : state;
 }
+const stockCapPct = computed(() => {
+  const cash = Number(limitForm.value.min_cash_pct);
+  const etf = Number(limitForm.value.etf_budget_pct);
+  if (!Number.isFinite(cash) || !Number.isFinite(etf)) return null;
+  return Math.round((100 - cash - etf) * 100) / 100;
+});
+const canSaveLimits = computed(() => {
+  const cash = Number(limitForm.value.min_cash_pct);
+  const etf = Number(limitForm.value.etf_budget_pct);
+  return (
+    !savingLimits.value &&
+    cash >= 0 &&
+    cash <= 100 &&
+    etf > 0 &&
+    etf <= 100 &&
+    cash + etf <= 100
+  );
+});
 const allocations = computed(() => {
   const a = account.value;
   if (!a?.equity) return [];
@@ -381,9 +403,16 @@ const signalColumns = [
   { title: "判定", key: "band_label", minWidth: 280 },
 ];
 
-async function load() {
+function syncLimits(current) {
+  limitForm.value = {
+    min_cash_pct: current.min_cash_pct,
+    etf_budget_pct: current.etf_budget_pct,
+  };
+}
+
+async function load({ quiet = false } = {}) {
   if (!accountId.value) return;
-  loading.value = true;
+  if (!quiet) loading.value = true;
   pageError.value = "";
   try {
     const [a, t, e, s] = await Promise.all([
@@ -393,6 +422,7 @@ async function load() {
       getStrategySignals(accountId.value),
     ]);
     account.value = a;
+    syncLimits(a);
     transactions.value = t;
     events.value = e;
     signals.value = s;
@@ -400,6 +430,28 @@ async function load() {
     pageError.value = errorText(error);
   } finally {
     loading.value = false;
+  }
+}
+
+async function saveLimits() {
+  if (!canSaveLimits.value) {
+    limitError.value =
+      "现金底线与资金上限须在有效范围内，资金上限须大于 0，且两者相加不超过 100%";
+    return;
+  }
+  savingLimits.value = true;
+  limitError.value = "";
+  try {
+    await updatePortfolioRules({
+      min_cash_pct: Number(limitForm.value.min_cash_pct),
+      etf_budget_pct: Number(limitForm.value.etf_budget_pct),
+    });
+    message.success("策略配置已保存");
+    await load({ quiet: true });
+  } catch (error) {
+    limitError.value = errorText(error);
+  } finally {
+    savingLimits.value = false;
   }
 }
 onMounted(async () => {
@@ -608,11 +660,45 @@ async function analyze() {
         </section>
         <p class="strategy-config-title">红利策略配置 · 独立于指数配置</p>
         <section class="limit-band" aria-label="红利策略配置">
+          <label class="limit-field">
+            <span>现金底线</span>
+            <input
+              v-model.number="limitForm.min_cash_pct"
+              type="number"
+              min="0"
+              max="100"
+              step="0.01"
+              :disabled="savingLimits"
+              @input="limitError = ''"
+            /><span>%</span>
+          </label>
+          <label class="limit-field">
+            <span>512890 资金上限</span>
+            <input
+              v-model.number="limitForm.etf_budget_pct"
+              type="number"
+              min="0.01"
+              max="100"
+              step="0.01"
+              :disabled="savingLimits"
+              @input="limitError = ''"
+            /><span>%</span>
+          </label>
           <div>
-            <span>现金底线</span><b>{{ account.min_cash_pct }}%</b>
+            <span>个股合计上限</span
+            ><b :class="stockCapPct != null && stockCapPct < 0 ? 'negative' : ''">{{
+              stockCapPct == null ? "--" : percent(stockCapPct)
+            }}</b>
           </div>
-          <div>
-            <span>512890 资金上限</span><b>{{ account.etf_budget_pct }}%</b>
+          <div class="limit-actions">
+            <NButton
+              size="small"
+              type="primary"
+              :loading="savingLimits"
+              :disabled="!canSaveLimits"
+              @click="saveLimits"
+              >保存配置</NButton
+            >
           </div>
           <div>
             <span>512890 实际层数</span><b>{{ account.etf_layers }} / 10</b>
@@ -622,6 +708,7 @@ async function analyze() {
             ><b>¥ {{ money(account.stock_cash_available) }}</b>
           </div>
         </section>
+        <p v-if="limitError" class="limit-error" role="alert">{{ limitError }}</p>
         <NTabs
           v-model:value="activeTab"
           type="line"
@@ -950,11 +1037,28 @@ h1 {
   font-size: 13px;
   font-weight: 600;
 }
-.limit-band div {
+.limit-band div,
+.limit-field {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: 6px 10px;
+}
+.limit-field input {
+  width: 88px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid #4a5558;
+  border-radius: 6px;
+  background: #23282a;
+  color: #e1e6e4;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.limit-error {
+  margin: 8px 0 0;
+  color: #e88080;
+  font-size: 12px;
 }
 .limit-band span {
   font-size: 12px;

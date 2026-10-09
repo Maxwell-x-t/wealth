@@ -16,10 +16,11 @@ from app.database import get_db
 from app.models.models import Account, AppConfig, CashEvent, Instrument, PriceSnapshot, StrategyAccount, Transaction
 from app.services.ledger import begin_write, canonical_code, ledger_rows, rebuild_accounts
 from app.services.strategy_account import STRATEGY_DIR, specs
-from dividend_grid.portfolio import account_etf_capacity, load_limits, value_account_data
+from dividend_grid.portfolio import account_etf_capacity, load_limits, save_limits, value_account_data
 
 router = APIRouter(prefix="/api/strategy", tags=["strategy"])
 analysis_lock = threading.Lock()
+PORTFOLIO_RULES = STRATEGY_DIR / "portfolio_rules.json"
 
 
 class CashEntry(BaseModel):
@@ -41,6 +42,22 @@ class CashEntry(BaseModel):
             raise ValueError("资金记录须填写正数金额，股数变动为零")
         if self.kind == "dividend" and not self.instrument_id:
             raise ValueError("分红须选择证券")
+        return self
+
+
+class PortfolioRulesUpdate(BaseModel):
+    model_config = {"allow_inf_nan": False}
+    min_cash_pct: float = Field(ge=0, le=100)
+    etf_budget_pct: float = Field(ge=0, le=100)
+
+    @model_validator(mode="after")
+    def budget_fits(self):
+        cash = round(self.min_cash_pct, 2)
+        etf = round(self.etf_budget_pct, 2)
+        if etf <= 0 or cash + etf > 100:
+            raise ValueError("现金底线与 512890 资金上限须在 0 到 100 之间，资金上限须大于 0，且两者相加不能超过 100%")
+        self.min_cash_pct = cash
+        self.etf_budget_pct = etf
         return self
 
 
@@ -73,7 +90,7 @@ def account_summary(account_id: int, db: Session = Depends(get_db)):
             price=price, price_date=latest.snapshot_date.isoformat() if latest else None,
             market_value=round(quantity * price, 2) if price is not None else (0 if quantity == 0 else None),
             sleeve="rsi" if code == "sh512890" else "other" if code in raw.get("external_assets", {}) else "grid"))
-    limits = load_limits(STRATEGY_DIR / "portfolio_rules.json")
+    limits = load_limits(PORTFOLIO_RULES)
     valuation, error = None, None
     try:
         valuation = value_account_data(raw, specs(), prices.get)
@@ -95,6 +112,19 @@ def account_summary(account_id: int, db: Session = Depends(get_db)):
         etf_capacity=account_etf_capacity(valuation, limits, specs()) if valuation else None,
         stock_cash_available=round(max(0, raw["cash"] - equity * limits.min_cash_pct / 100
             - max(0, equity * limits.etf_budget_pct / 100 - valuation.values.get("sh512890", 0))), 2) if valuation else None)
+
+
+@router.put("/portfolio-rules")
+def update_portfolio_rules(payload: PortfolioRulesUpdate):
+    try:
+        limits = save_limits(PORTFOLIO_RULES, payload.min_cash_pct, payload.etf_budget_pct)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "min_cash_pct": limits.min_cash_pct,
+        "etf_budget_pct": limits.etf_budget_pct,
+        "stock_cap_pct": round(100 - limits.min_cash_pct - limits.etf_budget_pct, 2),
+    }
 
 
 @router.get("/accounts/{account_id}/cash-events")
