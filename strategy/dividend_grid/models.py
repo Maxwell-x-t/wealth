@@ -33,6 +33,7 @@ class Stock:
     price: Optional[float] = None  # 最新价（用于推算各档股息率对应的买入/卖出价）
     dividend_fiscal_year: Optional[int] = None  # 财年口径所用财年（仅展示口径，不参与判定）
     dividend_dps: Optional[float] = None  # 该财年每股分红合计（含中期），仅展示
+    quote_yield: Optional[float] = None  # 行情源给出的股息率%，只用于核对，不参与买卖
 
 
 @dataclass

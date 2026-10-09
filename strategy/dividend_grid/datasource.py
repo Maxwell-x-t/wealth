@@ -252,6 +252,13 @@ class AkShareDataSource:
             raise DividendUnavailable(f"{code} {snapshot.note}")
         return snapshot.dps / price * 100, f"东方财富{CALIBER_NAME} {snapshot.note}"
 
+    def get_quote_yield(self, code: str) -> Optional[float]:
+        """行情源展示的股息率，不参与买卖。腾讯字段为股息率 TTM。"""
+        try:
+            return _to_float(self._fetch(code).get("股息率(TTM)"))
+        except Exception:  # noqa: BLE001
+            return None
+
     def get_dividend_snapshot(self, code: str) -> Optional[object]:
         """返回财年口径快照供输出展示口径与财年；取数失败返回 None，不影响判定。"""
         try:
