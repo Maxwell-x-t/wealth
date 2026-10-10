@@ -41,6 +41,8 @@ export const getDcaLiveSignal = () =>
   client.get('/dca-signals/live', { timeout: 30000 }).then((r) => r.data)
 export const skipInvestmentPlan = (data) =>
   client.post('/investment-plans/skip', data).then((r) => r.data)
+export const deferInvestmentPlan = (data) =>
+  client.post('/investment-plans/defer', data).then((r) => r.data)
 
 export const getWealthForecast = (params = {}) =>
   client.get('/forecast', { params }).then((r) => r.data)

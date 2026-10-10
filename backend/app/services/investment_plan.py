@@ -27,6 +27,7 @@ from app.services.plan_phase import build_phase_investment_summary, compute_acco
 MATCH_WINDOW_DAYS = 5
 AMOUNT_TOLERANCE = 0.2
 PLAN_SKIPS_KEY = "plan_skips"
+PLAN_DEFERS_KEY = "plan_defers"
 
 
 def _account_key(account_name: str) -> str:
@@ -57,8 +58,12 @@ def _plan_skip_keys_for_item(item: dict) -> List[str]:
     return keys
 
 
-def load_plan_skips(db: Session) -> Set[str]:
-    row = db.query(AppConfig).filter(AppConfig.key == PLAN_SKIPS_KEY).first()
+def _save_plan_markers(db: Session, key: str, values: Set[str]) -> None:
+    save_config(db, {key: json.dumps(sorted(values), ensure_ascii=False)})
+
+
+def _load_plan_marker_set(db: Session, key: str) -> Set[str]:
+    row = db.query(AppConfig).filter(AppConfig.key == key).first()
     if not row or not row.value:
         return set()
     try:
@@ -70,6 +75,20 @@ def load_plan_skips(db: Session) -> Set[str]:
     return {str(item) for item in data}
 
 
+def load_plan_skips(db: Session) -> Set[str]:
+    return _load_plan_marker_set(db, PLAN_SKIPS_KEY)
+
+
+def load_plan_defers(db: Session) -> Set[str]:
+    return _load_plan_marker_set(db, PLAN_DEFERS_KEY)
+
+
+def _marker_keys(plan_date: date, account: str, category: str, phase: str) -> tuple[str, str]:
+    key = plan_skip_key(plan_date, account, category, phase)
+    legacy_key = f"{plan_date.isoformat()}|{account}|{category}"
+    return key, legacy_key
+
+
 def set_plan_skip(
     db: Session,
     plan_date: date,
@@ -79,16 +98,43 @@ def set_plan_skip(
     skipped: bool,
 ) -> Set[str]:
     skips = load_plan_skips(db)
-    key = plan_skip_key(plan_date, account, category, phase)
-    legacy_key = f"{plan_date.isoformat()}|{account}|{category}"
+    defers = load_plan_defers(db)
+    key, legacy_key = _marker_keys(plan_date, account, category, phase)
     if skipped:
         skips.add(key)
         skips.discard(legacy_key)
+        defers.discard(key)
+        defers.discard(legacy_key)
     else:
         skips.discard(key)
         skips.discard(legacy_key)
-    save_config(db, {PLAN_SKIPS_KEY: json.dumps(sorted(skips), ensure_ascii=False)})
+    _save_plan_markers(db, PLAN_SKIPS_KEY, skips)
+    _save_plan_markers(db, PLAN_DEFERS_KEY, defers)
     return skips
+
+
+def set_plan_defer(
+    db: Session,
+    plan_date: date,
+    account: str,
+    category: str,
+    phase: str,
+    deferred: bool,
+) -> Set[str]:
+    skips = load_plan_skips(db)
+    defers = load_plan_defers(db)
+    key, legacy_key = _marker_keys(plan_date, account, category, phase)
+    if deferred:
+        defers.add(key)
+        defers.discard(legacy_key)
+        skips.discard(key)
+        skips.discard(legacy_key)
+    else:
+        defers.discard(key)
+        defers.discard(legacy_key)
+    _save_plan_markers(db, PLAN_SKIPS_KEY, skips)
+    _save_plan_markers(db, PLAN_DEFERS_KEY, defers)
+    return defers
 
 
 def _parse_date(value: str) -> date:
@@ -190,15 +236,39 @@ def _plan_currency(item: dict) -> str:
 
 
 def _is_upcoming_plan(item: dict, today: date) -> bool:
-    if item["status"] in ("done", "merged", "skipped"):
+    status = item["status"]
+    if status in ("done", "merged", "skipped", "deferred", "partial", "overdue"):
         return False
-    if item["status"] in ("pending", "today", "ready"):
+    if status == "ready":
         return True
-    if item["status"] == "accumulating" and item.get("whole_share_mode"):
-        return True
-    if item["status"] == "partial":
-        return False
+    if status in ("pending", "today", "accumulating"):
+        return item["plan_date"] >= today
     return item["plan_date"] >= today
+
+
+def _upcoming_plans(plans: List[dict], today: date, limit: Optional[int] = None) -> List[dict]:
+    """即将执行：未到期计划、今天的计划，以及每个香港整股池最新的一笔可买入。"""
+    ready_latest: dict[Tuple[str, str], dict] = {}
+    selected: List[dict] = []
+    for item in plans:
+        if item["status"] == "ready" and item.get("whole_share_mode"):
+            key = (item["account"], item["category"])
+            current = ready_latest.get(key)
+            if current is None or item["plan_date"] >= current["plan_date"]:
+                ready_latest[key] = item
+            continue
+        if _is_upcoming_plan(item, today):
+            selected.append(item)
+    selected.extend(ready_latest.values())
+    selected.sort(key=lambda row: (
+        0 if row["status"] == "ready" else 1,
+        row["plan_date"],
+        row["account"],
+        row["category"],
+    ))
+    if limit is not None:
+        return selected[:limit]
+    return selected
 
 
 def _init_plan_fields(item: dict) -> None:
@@ -375,35 +445,37 @@ def _match_dca_group_by_week(
     )
     if not txs:
         for row in group:
-            if row["status"] != "done":
-                row["status"] = _date_status(row["plan_date"])
+            if row["status"] in ("done", "deferred"):
+                continue
+            row["status"] = _date_status(row["plan_date"])
         return
 
     pending_debit = 0.0
     pending_credit = 0.0
 
     for plan in group:
-        if plan["status"] in ("done", "skipped"):
+        if plan["status"] in ("done", "skipped", "deferred"):
             continue
 
         base_needed = float(plan["base_amount_cny"])
+        defer_in = float(plan.get("rolled_over_amount_cny") or 0)
+        defer_count = int(plan.get("rolled_over_count") or 0)
         rollover_in = pending_debit
-        gross_needed = base_needed + rollover_in
+        gross_needed = base_needed + rollover_in + defer_in
         credit_applied = min(pending_credit, gross_needed)
         net_needed = round(gross_needed - credit_applied, 2)
         pending_credit = round(pending_credit - credit_applied, 2)
         pending_debit = 0.0
 
-        if rollover_in > 0:
-            plan["rolled_over_amount_cny"] = round(
-                float(plan.get("rolled_over_amount_cny", 0)) + rollover_in,
-                2,
-            )
-            plan["rolled_over_count"] = int(plan.get("rolled_over_count", 0)) + 1
+        if rollover_in > 0 or defer_in > 0:
+            plan["rolled_over_amount_cny"] = round(defer_in + rollover_in, 2)
+            plan["rolled_over_count"] = defer_count + (1 if rollover_in > 0 else 0)
         if credit_applied > 0:
             plan["credit_offset_cny"] = round(credit_applied, 2)
             plan["adjustment_note"] = f"含上期结余抵扣 {round(credit_applied, 2)} 元"
-        if rollover_in > 0 or credit_applied > 0:
+        if defer_in > 0 and rollover_in == 0 and credit_applied == 0:
+            pass
+        elif rollover_in > 0 or credit_applied > 0 or defer_in > 0:
             plan["amount_cny"] = round(max(0.0, net_needed), 2)
 
         if net_needed <= 0:
@@ -495,10 +567,11 @@ def _assign_hk_whole_share_status(
     if not elapsed:
         plan["status"] = "pending"
         plan["shortfall_cny"] = 0.0
+        due = float(plan.get("base_amount_cny") or 0)
         if pool > 0 and ref_price > 0:
             _append_pool_note(
                 plan,
-                f"当前池 ${round(pool, 2)}（到期后 +${round(float(plan['base_amount_cny']), 2)}）",
+                f"当前池 ${round(pool, 2)}（到期后 +${round(due, 2)}）",
             )
         return
 
@@ -548,6 +621,42 @@ def _assign_hk_whole_share_status(
         plan["status"] = "accumulating"
 
 
+def _publish_current_hk_pool(group: List[dict], pool: float, ref_price: float, threshold: float, today: date) -> None:
+    """可买入显示的是含已延期金额的当前执行池，而不是上一期快照。"""
+    shown = None
+    for plan in group:
+        if plan.get("status") in ("skipped", "deferred", "done", "partial"):
+            continue
+        if plan["plan_date"] > today or not plan.get("whole_share_mode"):
+            continue
+        if shown is None or plan["plan_date"] >= shown["plan_date"]:
+            shown = plan
+    if shown is None:
+        return
+
+    shown["execution_pool_usd"] = round(pool, 2)
+    shown["share_reference_price_usd"] = round(ref_price, 3)
+    shown["share_threshold_usd"] = round(threshold, 2)
+    shown["executable_shares"] = int(pool // ref_price) if ref_price > 0 else 0
+    if ref_price <= 0:
+        return
+    if pool >= threshold and shown["executable_shares"] > 0:
+        shown["status"] = "ready"
+        fresh = f"可买 {shown['executable_shares']} 股（约 ${round(ref_price, 3)}/股，手动执行）"
+    elif pool > 0:
+        shown["status"] = "accumulating"
+        fresh = f"池 ${round(pool, 2)} / ${round(threshold, 2)}，还差 ${round(max(0.0, threshold - pool), 2)}"
+    else:
+        return
+    existing = shown.get("adjustment_note") or ""
+    parts = [
+        part for part in existing.split("；")
+        if part and not part.startswith("可买 ") and not part.startswith("池 $")
+    ]
+    parts.append(fresh)
+    shown["adjustment_note"] = "；".join(parts)
+
+
 def _match_hk_whole_share_group(
     group: List[dict],
     db: Session,
@@ -580,24 +689,17 @@ def _match_hk_whole_share_group(
     for plan in group:
         if plan.get("status") == "skipped":
             continue
+        deferred = plan.get("status") == "deferred"
 
-        rebalance_note = plan.get("adjustment_note")
-        plan["adjustment_note"] = rebalance_note
-
+        # 延期金额已在原计划到期时进入执行池，这里只加本期自身金额，避免加第二次。
         base = float(plan["base_amount_cny"])
-        rollover_in = 0.0
-        gross = base + rollover_in
         elapsed = plan["plan_date"] <= today
-        credit_applied = min(credit, gross) if elapsed else 0.0
-        net_contribution = gross - credit_applied if elapsed else 0.0
+        credit_applied = min(credit, base) if elapsed else 0.0
+        net_contribution = base - credit_applied if elapsed else 0.0
         if elapsed:
             credit -= credit_applied
 
-        if rollover_in > 0:
-            plan["rolled_over_amount_cny"] = round(rollover_in, 2)
-            plan["rolled_over_count"] = int(plan.get("rolled_over_count", 0)) + 1
-            plan["amount_cny"] = round(base + rollover_in, 2)
-        if credit_applied > 0:
+        if credit_applied > 0 and not deferred:
             _append_pool_note(plan, f"含上期结余抵扣 ${round(credit_applied, 2)}")
 
         if elapsed:
@@ -621,7 +723,16 @@ def _match_hk_whole_share_group(
                     credit += -pool
                     pool = 0.0
 
+        if deferred:
+            plan["execution_pool_usd"] = round(pool, 2)
+            plan["whole_share_mode"] = True
+            plan["currency"] = "USD"
+            plan["status"] = "deferred"
+            continue
+
         _assign_hk_whole_share_status(plan, pool, threshold, ref_price, consumed_usd, today, elapsed)
+
+    _publish_current_hk_pool(group, pool, ref_price, threshold, today)
 
 
 def _group_match_transactions(items: List[dict], db: Session, config: dict, usd_cny_rate: float) -> None:
@@ -645,6 +756,45 @@ def _group_match_transactions(items: List[dict], db: Session, config: dict, usd_
             continue
         group.sort(key=lambda row: row["plan_date"])
         _match_dca_group_by_week(group, db, config, usd_cny_rate)
+
+
+def _apply_defers(items: List[dict], defers: Set[str], skips: Set[str], today: date) -> None:
+    """手动延期：金额加到同一账户、标的、阶段的下一笔未到期计划。"""
+    groups: dict[Tuple[str, str, str], List[dict]] = defaultdict(list)
+    for item in items:
+        groups[_group_key(item)].append(item)
+
+    for group in groups.values():
+        group.sort(key=lambda row: row["plan_date"])
+        carry = 0.0
+        carry_count = 0
+        for plan in group:
+            keys = _plan_skip_keys_for_item(plan)
+            if any(key in skips for key in keys):
+                continue
+            if plan.get("status") == "done" or not any(key in defers for key in keys):
+                if carry > 0 and plan["plan_date"] >= today:
+                    plan["rolled_over_amount_cny"] = round(
+                        float(plan.get("rolled_over_amount_cny") or 0) + carry,
+                        2,
+                    )
+                    plan["rolled_over_count"] = int(plan.get("rolled_over_count") or 0) + carry_count
+                    plan["amount_cny"] = round(float(plan["amount_cny"]) + carry, 2)
+                    carry = 0.0
+                    carry_count = 0
+                continue
+            carry += float(plan["amount_cny"])
+            carry_count += 1
+            plan["status"] = "deferred"
+            plan["shortfall_cny"] = 0.0
+            plan["matched_amount_cny"] = 0.0
+            plan["rolled_over_amount_cny"] = 0.0
+            plan["rolled_over_count"] = 0
+            plan["adjustment_note"] = "已延期，金额顺延到后续未到期计划"
+        if carry > 0:
+            for plan in group:
+                if plan.get("status") == "deferred":
+                    plan["adjustment_note"] = "已延期，没有更晚的计划可顺延"
 
 
 def _apply_skips(items: List[dict], skips: Set[str]) -> None:
@@ -673,8 +823,11 @@ def _finalize_plan_items(items: List[dict], db: Session, config: dict, usd_cny_r
         _init_plan_fields(item)
         item["status"] = _date_status(item["plan_date"])
 
+    today = date.today()
+    skips = load_plan_skips(db)
+    _apply_defers(items, load_plan_defers(db), skips, today)
     _group_match_transactions(items, db, config, usd_cny_rate)
-    _apply_skips(items, load_plan_skips(db))
+    _apply_skips(items, skips)
     _apply_rollover_merges(items)
     _rematch_rolled_targets(items, db, config, usd_cny_rate)
     return items
@@ -1141,17 +1294,12 @@ def _account_plan_stats(
     building_plans = [item for item in account_plans if item["phase"] == "building"]
     dca_plans = [item for item in account_plans if item["phase"] == "dca"]
     dca_elapsed = [item for item in dca_plans if item["plan_date"] <= today]
-    dca_skipped = sum(1 for item in dca_elapsed if item["status"] == "skipped")
+    dca_skipped = sum(1 for item in dca_elapsed if item["status"] in ("skipped", "deferred"))
     dca_done = sum(1 for item in dca_elapsed if item["status"] == "done")
     dca_partial = sum(1 for item in dca_elapsed if item["status"] == "partial")
     dca_denominator = max(len(dca_elapsed) - dca_skipped, 0)
     overdue = [item for item in account_plans if item["status"] == "overdue"]
-    upcoming = [
-        item
-        for item in account_plans
-        if _is_upcoming_plan(item, today)
-    ]
-    upcoming.sort(key=lambda row: (0 if row["status"] == "ready" else 1, row["plan_date"]))
+    upcoming = _upcoming_plans(account_plans, today)
 
     building_matched = dca_matched = 0.0
     for item in account_plans:
@@ -1189,13 +1337,7 @@ def build_plan_overview(db: Session, config: dict) -> dict:
     plans = generate_investment_plans(db, config)
     today = date.today()
     usd_cny_rate = float(config.get("usd_cny_rate", 7.2))
-    upcoming = [
-        item
-        for item in plans
-        if _is_upcoming_plan(item, today)
-    ]
-    upcoming.sort(key=lambda row: (0 if row["status"] == "ready" else 1, row["plan_date"]))
-    upcoming = upcoming[:8]
+    upcoming = _upcoming_plans(plans, today, limit=8)
     overdue = [item for item in plans if item["status"] == "overdue"]
 
     building_plans = [item for item in plans if item["phase"] == "building"]
@@ -1204,7 +1346,7 @@ def build_plan_overview(db: Session, config: dict) -> dict:
     building_done = sum(1 for item in building_plans if item["status"] == "done")
     dca_done = sum(1 for item in dca_elapsed if item["status"] == "done")
     dca_partial = sum(1 for item in dca_elapsed if item["status"] == "partial")
-    dca_skipped = sum(1 for item in dca_elapsed if item["status"] == "skipped")
+    dca_skipped = sum(1 for item in dca_elapsed if item["status"] in ("skipped", "deferred"))
     merged_count = sum(1 for item in plans if item["status"] == "merged" and item["plan_date"] <= today)
     # 跳过不计入未完成，执行率 = 完成 / (到期 − 跳过)
     dca_denominator = max(len(dca_elapsed) - dca_skipped, 0)
@@ -1216,7 +1358,7 @@ def build_plan_overview(db: Session, config: dict) -> dict:
         item
         for item in plans
         if item["plan_date"] <= today
-        and item["status"] in ("done", "partial", "merged", "overdue", "skipped", "accumulating", "ready")
+        and item["status"] in ("done", "partial", "merged", "overdue", "skipped", "deferred", "accumulating", "ready")
     ]
     history.sort(key=lambda item: (item["plan_date"], item["account"], item["category"]), reverse=True)
     history = history[:100]
