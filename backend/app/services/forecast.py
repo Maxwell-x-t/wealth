@@ -37,7 +37,7 @@ def _build_contribution_by_year(
     by_year: Dict[int, dict] = {}
 
     for item in plans:
-        if item["status"] in ("merged", "done", "partial"):
+        if item["status"] in ("merged", "done", "partial", "deferred"):
             continue
         if item["plan_date"] < start:
             continue

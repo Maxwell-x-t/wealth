@@ -17,6 +17,7 @@ import {
   getDcaLiveSignal,
   getInvestmentPlanOverview,
   getInvestmentPlans,
+  deferInvestmentPlan,
   skipInvestmentPlan,
 } from '../api/client'
 import { formatMoney } from '../utils/format'
@@ -57,6 +58,7 @@ const statusMap = {
   overdue: { label: '已逾期', type: 'error' },
   merged: { label: '已合并', type: 'info' },
   skipped: { label: '已跳过', type: 'default' },
+  deferred: { label: '已延期', type: 'info' },
   accumulating: { label: '累积中', type: 'info' },
   ready: { label: '可买入', type: 'success' },
 }
@@ -71,12 +73,14 @@ function planAmounts(row) {
   const credit = Number(row.credit_offset_cny ?? 0)
 
   if (rollover > 0 || credit > 0) {
+    const total = Math.max(0, Number(row.amount_cny ?? weeklyBase + rollover - credit))
+    const own = Math.max(0, total - rollover + credit)
     return {
-      base: weeklyBase,
-      weeklyBase,
+      base: own,
+      weeklyBase: own,
       rollover,
       credit,
-      total: Math.max(0, weeklyBase + rollover - credit),
+      total,
     }
   }
 
@@ -308,6 +312,25 @@ async function toggleSkip(row, skipped) {
   }
 }
 
+async function toggleDefer(row, deferred) {
+  actionLoading.value = true
+  try {
+    await deferInvestmentPlan({
+      plan_date: row.plan_date,
+      account: row.account,
+      category: row.category,
+      phase: row.phase,
+      deferred,
+    })
+    message.success(deferred ? '已延期，金额顺延到下一笔未到期计划' : '已取消延期')
+    await loadData()
+  } catch (error) {
+    message.error(error.response?.data?.detail || '操作失败')
+  } finally {
+    actionLoading.value = false
+  }
+}
+
 function renderStatus(row) {
   const meta = statusMap[row.status] || statusMap.pending
   return h(NTag, { type: meta.type, size: 'small' }, { default: () => meta.label })
@@ -329,6 +352,18 @@ function renderActions(row) {
       { default: () => '取消跳过' },
     )
   }
+  if (row.status === 'deferred') {
+    return h(
+      NButton,
+      {
+        size: 'small',
+        quaternary: true,
+        disabled: actionLoading.value,
+        onClick: () => toggleDefer(row, false),
+      },
+      { default: () => '取消延期' },
+    )
+  }
   const recordLabel = row.status === 'ready' ? '录入买入' : '录入'
   return h(NSpace, { size: 6 }, {
     default: () => [
@@ -340,6 +375,16 @@ function renderActions(row) {
           onClick: () => goRecord(row),
         },
         { default: () => recordLabel },
+      ),
+      h(
+        NButton,
+        {
+          size: 'small',
+          quaternary: true,
+          disabled: actionLoading.value,
+          onClick: () => toggleDefer(row, true),
+        },
+        { default: () => '延期' },
       ),
       h(
         NButton,
@@ -381,7 +426,7 @@ function buildColumns({ history = false } = {}) {
 
   cols.push(
     { title: '状态', key: 'status', width: 100, render: (row) => renderStatus(row) },
-    { title: '操作', key: 'actions', width: 150, render: (row) => renderActions(row) },
+    { title: '操作', key: 'actions', width: 210, render: (row) => renderActions(row) },
   )
   return cols
 }
@@ -711,7 +756,7 @@ function accountBuildingSub(summary) {
           <div v-if="displayNextItem" class="metric-sub">
             {{ formatPlanAmountPair(displayNextItem) }}
             <NButton
-              v-if="displayNextItem.status !== 'done' && displayNextItem.status !== 'skipped'"
+              v-if="!['done', 'skipped', 'deferred'].includes(displayNextItem.status)"
               size="tiny"
               type="primary"
               style="margin-left: 8px"
