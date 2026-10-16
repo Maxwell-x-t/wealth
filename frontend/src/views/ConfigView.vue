@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import {
   NButton,
   NCheckbox,
@@ -18,13 +18,14 @@ import {
 } from 'naive-ui'
 import {
   getConfig,
+  getDashboard,
   getIndexDataStatus,
   getSyncStatus,
   refreshIndexData,
   runSyncNow,
   updateConfig,
 } from '../api/client'
-import { formatLocalDate } from '../utils/format'
+import { formatLocalDate, formatMoney } from '../utils/format'
 
 const message = useMessage()
 const loading = ref(true)
@@ -45,6 +46,7 @@ const dcaEffectiveFrom = ref(Date.now())
 const loadedDcaAmounts = reactive({
   dca_monthly_amount: null,
 })
+const hkAssetsCny = ref(null)
 
 const form = reactive({
   nasdaq: 70,
@@ -95,6 +97,7 @@ const form = reactive({
   dca_ma_center_pct: 8,
   hk_whole_share_only: true,
   hk_share_price_buffer_pct: 2,
+  hk_max_cny: null,
   hk_nasdaq: null,
   hk_sp500: null,
   mainland_nasdaq: null,
@@ -104,7 +107,13 @@ const form = reactive({
 async function loadData() {
   loading.value = true
   try {
-    const [config, status, indexStatus] = await Promise.all([getConfig(), getSyncStatus(), getIndexDataStatus()])
+    const [config, status, indexStatus, dashboard] = await Promise.all([
+      getConfig(),
+      getSyncStatus(),
+      getIndexDataStatus(),
+      getDashboard('index').catch(() => null),
+    ])
+    hkAssetsCny.value = dashboard?.hk_assets_cny ?? null
     Object.assign(form, config)
     // Legacy asset buckets belong to the dividend account and are not part of index configuration.
     form.a_share = 0
@@ -130,9 +139,16 @@ const OPTIONAL_NUMERIC_KEYS = [
   'building_target_amount',
   'hk_nasdaq',
   'hk_sp500',
+  'hk_max_cny',
   'mainland_nasdaq',
   'mainland_sp500',
 ]
+
+const hkCapRoom = computed(() => {
+  const cap = normAmount(form.hk_max_cny)
+  if (cap === null || hkAssetsCny.value == null) return null
+  return Math.round((cap - Number(hkAssetsCny.value)) * 100) / 100
+})
 
 function buildConfigPayload() {
   const payload = { ...form }
@@ -389,6 +405,18 @@ async function handleRefreshIndexData() {
         </p>
 
         <NDivider title-placement="left">香港执行设置</NDivider>
+        <NFormItem label="香港最高限额（¥）">
+          <NInputNumber v-model:value="form.hk_max_cny" :min="0" clearable style="width: 100%" />
+        </NFormItem>
+        <p class="hint-text">
+          按香港指数持仓的当前市值计算。未到限额时仍按账户比例拆分，超出剩余额度的部分留在同期大陆计划；达到限额后，今天及以后的香港应投为 0。留空表示不限制。
+          <template v-if="hkAssetsCny != null">
+            当前香港市值 {{ formatMoney(hkAssetsCny) }}。
+            <template v-if="hkCapRoom == null">未设上限。</template>
+            <template v-else-if="hkCapRoom >= 0">剩余额度 {{ formatMoney(hkCapRoom) }}。</template>
+            <template v-else>已超出限额 {{ formatMoney(-hkCapRoom) }}。</template>
+          </template>
+        </p>
         <NFormItem label="香港纳指 %">
           <NInputNumber v-model:value="form.hk_nasdaq" :min="0" :max="100" clearable style="width: 100%" />
         </NFormItem>

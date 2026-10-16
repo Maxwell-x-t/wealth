@@ -182,6 +182,7 @@ class AllocationTarget(BaseModel):
     dca_ma_center_pct: float = 8
     hk_whole_share_only: bool = True
     hk_share_price_buffer_pct: float = 2
+    hk_max_cny: Optional[float] = None
     mainland_plan_start_date: Optional[date] = None
     mainland_building_first_month_amount: Optional[float] = None
     mainland_building_monthly_amount: Optional[float] = None
@@ -235,6 +236,7 @@ class AllocationTarget(BaseModel):
         "hk_weeks_per_month",
         "hk_nasdaq",
         "hk_sp500",
+        "hk_max_cny",
         mode="before",
     )
     @classmethod
