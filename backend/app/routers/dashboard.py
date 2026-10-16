@@ -88,6 +88,7 @@ def _config_to_schema(config: dict) -> AllocationTarget:
         dca_ma_center_pct=float(config.get("dca_ma_center_pct", 8)),
         hk_whole_share_only=str(config.get("hk_whole_share_only", "1")) in ("1", "true", "True"),
         hk_share_price_buffer_pct=float(config.get("hk_share_price_buffer_pct", 2)),
+        hk_max_cny=_optional_float(config, "hk_max_cny"),
         mainland_nasdaq=_optional_float(config, "mainland_nasdaq"),
         mainland_sp500=_optional_float(config, "mainland_sp500"),
         hk_nasdaq=_optional_float(config, "hk_nasdaq"),
@@ -142,6 +143,7 @@ def _schema_to_config(payload: AllocationTarget) -> dict:
         "mainland_sp500",
         "hk_nasdaq",
         "hk_sp500",
+        "hk_max_cny",
     )
     for key in optional_fields:
         if data.get(key) is None:

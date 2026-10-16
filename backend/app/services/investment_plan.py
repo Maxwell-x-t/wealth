@@ -1136,6 +1136,140 @@ def _generate_account_plans(
     return items
 
 
+def _hk_index_value_cny(db: Session, config: dict, metrics: Optional[dict]) -> float:
+    """香港指数持仓市值。不走总览接口，避免生成计划时互相调用。"""
+    if metrics is not None and "hk_assets_cny" in metrics:
+        return float(metrics.get("hk_assets_cny") or 0)
+    from app.models.models import StrategyAccount
+    from app.services.holdings import build_holdings
+
+    rate = float(config.get("usd_cny_rate", 7.2))
+    managed = {row.account_id for row in db.query(StrategyAccount)}
+    holdings = build_holdings(
+        db,
+        usd_cny_rate=rate,
+        categories=set(INDEX_CATEGORIES),
+        exclude_account_ids=managed,
+        include_managed_cash=False,
+    )
+    return sum(
+        float(holding.get("market_value_cny") or 0)
+        for holding in holdings
+        if "香港" in str(holding.get("account_name") or "") or holding.get("currency") == "USD"
+    )
+
+
+def _optional_hk_max_cny(config: dict) -> Optional[float]:
+    raw = config.get("hk_max_cny")
+    if raw in (None, ""):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def _find_mainland_peer(items: List[dict], hk_item: dict) -> Optional[dict]:
+    same_slot = [
+        item
+        for item in items
+        if item["account"] == "大陆"
+        and item["phase"] == hk_item["phase"]
+        and item["category"] == hk_item["category"]
+        and item["plan_date"].year == hk_item["plan_date"].year
+        and item["plan_date"].month == hk_item["plan_date"].month
+        and item.get("week_index") == hk_item.get("week_index")
+    ]
+    if same_slot:
+        return same_slot[0]
+    nearby = [
+        item
+        for item in items
+        if item["account"] == "大陆"
+        and item["phase"] == hk_item["phase"]
+        and item["category"] == hk_item["category"]
+        and abs((item["plan_date"] - hk_item["plan_date"]).days) <= 10
+    ]
+    if not nearby:
+        return None
+    return min(nearby, key=lambda item: abs((item["plan_date"] - hk_item["plan_date"]).days))
+
+
+def _append_cap_note(item: dict, note: str) -> None:
+    existing = item.get("adjustment_note")
+    if existing:
+        if note in existing:
+            return
+        item["adjustment_note"] = f"{existing}；{note}"
+    else:
+        item["adjustment_note"] = note
+
+
+def _apply_hk_max_cap(
+    items: List[dict],
+    cap_cny: Optional[float],
+    hk_value_cny: float,
+    usd_cny_rate: float,
+    today: date,
+) -> List[dict]:
+    """今天及以后的香港计划不超过剩余额度，超出部分留在同期大陆计划。"""
+    if cap_cny is None or usd_cny_rate <= 0:
+        return items
+    room = max(0.0, float(cap_cny) - float(hk_value_cny))
+    future_hk = [
+        item for item in items if item["account"] == "香港" and item["plan_date"] >= today
+    ]
+    future_hk.sort(key=lambda item: (item["plan_date"], item["phase"], item["category"]))
+    kept = [item for item in items if not (item["account"] == "香港" and item["plan_date"] >= today)]
+
+    for hk_item in future_hk:
+        original_usd = float(hk_item["amount_cny"])
+        original_cny = original_usd * usd_cny_rate
+        if original_cny <= 0:
+            kept.append(hk_item)
+            continue
+        allowed_cny = min(original_cny, room)
+        if allowed_cny < 0.01:
+            allowed_cny = 0.0
+        withheld_cny = round(original_cny - allowed_cny, 2)
+        room = round(room - allowed_cny, 2)
+        if allowed_cny >= 0.01:
+            scale = allowed_cny / original_cny
+            hk_item["amount_cny"] = round(original_usd * scale, 2)
+            if hk_item.get("base_amount_cny") is not None:
+                hk_item["base_amount_cny"] = round(float(hk_item["base_amount_cny"]) * scale, 2)
+            for field in ("dca_boost_cny", "month_boost_cny"):
+                if hk_item.get(field):
+                    hk_item[field] = round(float(hk_item[field]) * scale, 2)
+            if withheld_cny >= 0.01:
+                _append_cap_note(hk_item, f"受香港最高限额限制，¥{withheld_cny:.2f} 留在同期大陆计划")
+            kept.append(hk_item)
+        if withheld_cny < 0.01:
+            continue
+        peer = _find_mainland_peer(kept, hk_item)
+        transfer_note = f"含香港限额结转 ¥{withheld_cny:.2f}"
+        if peer:
+            peer["amount_cny"] = round(float(peer["amount_cny"]) + withheld_cny, 2)
+            _append_cap_note(peer, transfer_note)
+            continue
+        _append_plan_item(
+            kept,
+            hk_item["plan_date"],
+            hk_item["phase"],
+            "大陆",
+            hk_item["category"],
+            withheld_cny,
+            int(hk_item.get("week_index") or 1),
+            adjustment_note=transfer_note,
+        )
+
+    kept.sort(key=lambda item: (item["plan_date"], item["account"], item["category"]))
+    return kept
+
+
 def generate_investment_plans(
     db: Session,
     config: dict,
@@ -1274,6 +1408,15 @@ def generate_investment_plans(
         )
 
     items.sort(key=lambda item: (item["plan_date"], item["account"], item["category"]))
+    hk_cap = _optional_hk_max_cny(config)
+    if hk_cap is not None:
+        items = _apply_hk_max_cap(
+            items,
+            hk_cap,
+            _hk_index_value_cny(db, config, metrics),
+            usd_cny_rate,
+            today,
+        )
     items = _finalize_plan_items(items, db, config, usd_cny_rate)
 
     if display_start is not None:
